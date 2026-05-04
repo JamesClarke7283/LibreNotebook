@@ -1,9 +1,13 @@
 // Provider-configuration form. One block for the LLM, one for embeddings.
 // Each block lets the user pick OpenAI-compatible or Ollama, fill in the
-// base URL / API key / model, and the form POSTs to /api/settings.
+// base URL / API key, click "Test connection" to probe the server and
+// populate a searchable model combobox, and the form POSTs to
+// /api/settings.
 
 import { useSignal } from "@preact/signals";
 import type { AppSettings, ProviderConfig, ProviderKind } from "../lib/types.ts";
+import { ModelCombobox } from "./ModelCombobox.tsx";
+import { CheckIcon } from "../components/Icons.tsx";
 
 interface Props {
   initial: AppSettings | null;
@@ -22,58 +26,120 @@ const DEFAULTS: Record<ProviderKind, { baseUrl: string; llmModel: string; embedd
   },
 };
 
-export function OnboardingForm({ initial }: Props) {
-  const llmProvider = useSignal<ProviderKind>(initial?.llm.provider ?? "openai");
-  const llmBaseUrl = useSignal(initial?.llm.baseUrl ?? DEFAULTS.openai.baseUrl);
-  const llmApiKey = useSignal(initial?.llm.apiKey ?? "");
-  const llmModel = useSignal(initial?.llm.model ?? DEFAULTS.openai.llmModel);
+interface BlockState {
+  provider: ProviderKind;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  models: string[];
+  testing: boolean;
+  testResult: { ok: boolean; message: string } | null;
+}
 
-  const embProvider = useSignal<ProviderKind>(
-    initial?.embedding.provider ?? "openai",
+function makeBlockState(
+  cfg: ProviderConfig | undefined,
+  modelDefault: string,
+): BlockState {
+  return {
+    provider: cfg?.provider ?? "openai",
+    baseUrl: cfg?.baseUrl ?? DEFAULTS[cfg?.provider ?? "openai"].baseUrl,
+    apiKey: cfg?.apiKey ?? "",
+    model: cfg?.model ?? modelDefault,
+    models: [],
+    testing: false,
+    testResult: null,
+  };
+}
+
+export function OnboardingForm({ initial }: Props) {
+  const llm = useSignal<BlockState>(
+    makeBlockState(initial?.llm, DEFAULTS.openai.llmModel),
   );
-  const embBaseUrl = useSignal(
-    initial?.embedding.baseUrl ?? DEFAULTS.openai.baseUrl,
-  );
-  const embApiKey = useSignal(initial?.embedding.apiKey ?? "");
-  const embModel = useSignal(
-    initial?.embedding.model ?? DEFAULTS.openai.embeddingModel,
+  const emb = useSignal<BlockState>(
+    makeBlockState(initial?.embedding, DEFAULTS.openai.embeddingModel),
   );
 
   const submitting = useSignal(false);
-  const error = useSignal<string | null>(null);
+  const submitError = useSignal<string | null>(null);
 
   function applyDefault(
-    kind: "llm" | "emb",
+    sig: typeof llm,
     provider: ProviderKind,
+    modelKind: "llmModel" | "embeddingModel",
   ) {
     const d = DEFAULTS[provider];
-    if (kind === "llm") {
-      llmProvider.value = provider;
-      llmBaseUrl.value = d.baseUrl;
-      llmModel.value = d.llmModel;
-    } else {
-      embProvider.value = provider;
-      embBaseUrl.value = d.baseUrl;
-      embModel.value = d.embeddingModel;
+    sig.value = {
+      ...sig.value,
+      provider,
+      baseUrl: d.baseUrl,
+      model: d[modelKind],
+      models: [],
+      testResult: null,
+    };
+  }
+
+  async function testConnection(sig: typeof llm) {
+    const s = sig.value;
+    sig.value = { ...s, testing: true, testResult: null };
+    try {
+      const res = await fetch("/api/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: s.provider,
+          baseUrl: s.baseUrl.trim(),
+          apiKey: s.apiKey.trim() || undefined,
+        }),
+      });
+      const data = await res.json() as
+        | { ok: true; models: string[] }
+        | { ok: false; error: string };
+      if (data.ok) {
+        sig.value = {
+          ...sig.value,
+          testing: false,
+          models: data.models,
+          testResult: {
+            ok: true,
+            message:
+              `Connected — ${data.models.length} model${data.models.length === 1 ? "" : "s"} available`,
+          },
+        };
+      } else {
+        sig.value = {
+          ...sig.value,
+          testing: false,
+          testResult: { ok: false, message: data.error },
+        };
+      }
+    } catch (err) {
+      sig.value = {
+        ...sig.value,
+        testing: false,
+        testResult: {
+          ok: false,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
     }
   }
 
   async function onSubmit(e: Event) {
     e.preventDefault();
-    error.value = null;
+    submitError.value = null;
     submitting.value = true;
     const payload: { llm: ProviderConfig; embedding: ProviderConfig } = {
       llm: {
-        provider: llmProvider.value,
-        baseUrl: llmBaseUrl.value.trim(),
-        apiKey: llmApiKey.value.trim() || undefined,
-        model: llmModel.value.trim(),
+        provider: llm.value.provider,
+        baseUrl: llm.value.baseUrl.trim(),
+        apiKey: llm.value.apiKey.trim() || undefined,
+        model: llm.value.model.trim(),
       },
       embedding: {
-        provider: embProvider.value,
-        baseUrl: embBaseUrl.value.trim(),
-        apiKey: embApiKey.value.trim() || undefined,
-        model: embModel.value.trim(),
+        provider: emb.value.provider,
+        baseUrl: emb.value.baseUrl.trim(),
+        apiKey: emb.value.apiKey.trim() || undefined,
+        model: emb.value.model.trim(),
       },
     };
     try {
@@ -83,12 +149,11 @@ export function OnboardingForm({ initial }: Props) {
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `HTTP ${res.status}`);
+        throw new Error(await res.text() || `HTTP ${res.status}`);
       }
       globalThis.location.href = "/notebooks";
     } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err);
+      submitError.value = err instanceof Error ? err.message : String(err);
     } finally {
       submitting.value = false;
     }
@@ -99,31 +164,27 @@ export function OnboardingForm({ initial }: Props) {
       <ProviderBlock
         title="Chat / LLM model"
         description="Used for chat answers and studio generations."
-        provider={llmProvider.value}
-        baseUrl={llmBaseUrl.value}
-        apiKey={llmApiKey.value}
-        model={llmModel.value}
-        onProvider={(p) => applyDefault("llm", p)}
-        onBaseUrl={(v) => (llmBaseUrl.value = v)}
-        onApiKey={(v) => (llmApiKey.value = v)}
-        onModel={(v) => (llmModel.value = v)}
+        state={llm.value}
+        onProvider={(p) => applyDefault(llm, p, "llmModel")}
+        onBaseUrl={(v) => (llm.value = { ...llm.value, baseUrl: v })}
+        onApiKey={(v) => (llm.value = { ...llm.value, apiKey: v })}
+        onModel={(v) => (llm.value = { ...llm.value, model: v })}
+        onTest={() => testConnection(llm)}
       />
       <ProviderBlock
         title="Embedding model"
         description="Used to index your notebook sources for retrieval."
-        provider={embProvider.value}
-        baseUrl={embBaseUrl.value}
-        apiKey={embApiKey.value}
-        model={embModel.value}
-        onProvider={(p) => applyDefault("emb", p)}
-        onBaseUrl={(v) => (embBaseUrl.value = v)}
-        onApiKey={(v) => (embApiKey.value = v)}
-        onModel={(v) => (embModel.value = v)}
+        state={emb.value}
+        onProvider={(p) => applyDefault(emb, p, "embeddingModel")}
+        onBaseUrl={(v) => (emb.value = { ...emb.value, baseUrl: v })}
+        onApiKey={(v) => (emb.value = { ...emb.value, apiKey: v })}
+        onModel={(v) => (emb.value = { ...emb.value, model: v })}
+        onTest={() => testConnection(emb)}
       />
 
-      {error.value && (
+      {submitError.value && (
         <div class="text-sm text-red-400 bg-red-950/40 border border-red-900 rounded-md px-3 py-2">
-          {error.value}
+          {submitError.value}
         </div>
       )}
 
@@ -135,7 +196,7 @@ export function OnboardingForm({ initial }: Props) {
         {submitting.value ? "Saving…" : "Save and continue"}
       </button>
       <p class="text-xs text-zinc-500 text-center">
-        Settings are stored locally via Deno KV. You can change them anytime
+        Settings are stored locally as JSON. You can change them anytime
         from the Settings page.
       </p>
     </form>
@@ -145,18 +206,17 @@ export function OnboardingForm({ initial }: Props) {
 interface BlockProps {
   title: string;
   description: string;
-  provider: ProviderKind;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+  state: BlockState;
   onProvider: (p: ProviderKind) => void;
   onBaseUrl: (v: string) => void;
   onApiKey: (v: string) => void;
   onModel: (v: string) => void;
+  onTest: () => void;
 }
 
 function ProviderBlock(props: BlockProps) {
-  const isOllama = props.provider === "ollama";
+  const { state } = props;
+  const isOllama = state.provider === "ollama";
   return (
     <fieldset class="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
       <div class="flex items-start justify-between gap-3">
@@ -169,7 +229,7 @@ function ProviderBlock(props: BlockProps) {
         <div class="inline-flex rounded-full bg-zinc-800 p-1 text-xs">
           <ProviderTab
             label="OpenAI-compatible"
-            active={props.provider === "openai"}
+            active={state.provider === "openai"}
             onClick={() => props.onProvider("openai")}
           />
           <ProviderTab
@@ -180,29 +240,68 @@ function ProviderBlock(props: BlockProps) {
         </div>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field
-          label="Server URL"
-          value={props.baseUrl}
-          onInput={props.onBaseUrl}
-          placeholder={isOllama
-            ? "http://localhost:11434"
-            : "https://api.openai.com/v1"}
-        />
-        <Field
-          label="Model"
-          value={props.model}
-          onInput={props.onModel}
-          placeholder={isOllama ? "llama3.1" : "gpt-4o-mini"}
-        />
-      </div>
+      <Field
+        label="Server URL"
+        value={state.baseUrl}
+        onInput={props.onBaseUrl}
+        placeholder={isOllama
+          ? "http://localhost:11434"
+          : "https://api.openai.com/v1"}
+      />
       <Field
         label={isOllama ? "API key (optional)" : "API key"}
-        value={props.apiKey}
+        value={state.apiKey}
         onInput={props.onApiKey}
         type="password"
         placeholder={isOllama ? "(leave blank for local Ollama)" : "sk-…"}
       />
+
+      <div class="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={props.onTest}
+          disabled={state.testing}
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-zinc-700 text-zinc-100 text-xs hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {state.testing
+            ? "Testing…"
+            : (
+              <>
+                <CheckIcon size={12} />
+                <span>Test connection</span>
+              </>
+            )}
+        </button>
+        {state.testResult && (
+          <span
+            class={`text-xs ${
+              state.testResult.ok ? "text-emerald-400" : "text-red-400"
+            }`}
+          >
+            {state.testResult.message}
+          </span>
+        )}
+      </div>
+
+      <div>
+        <span class="block text-xs uppercase tracking-wide text-zinc-500 mb-1">
+          Model
+        </span>
+        <ModelCombobox
+          value={state.model}
+          onInput={props.onModel}
+          options={state.models}
+          placeholder={isOllama
+            ? "llama3.1 — test connection to list installed models"
+            : "gpt-4o-mini — test connection to list available models"}
+        />
+        {state.models.length === 0 && (
+          <p class="text-[11px] text-zinc-500 mt-1">
+            Click <em>Test connection</em>{" "}
+            to populate the dropdown, or just type any model name.
+          </p>
+        )}
+      </div>
     </fieldset>
   );
 }
