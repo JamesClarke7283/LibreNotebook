@@ -82,10 +82,25 @@ export interface NotebookSource {
   createdAt: string;
 }
 
+/**
+ * One retrieved chunk surfaced as a citation. The LLM is prompted to refer
+ * to chunks by their `index` (e.g. `[2]`), and the UI rewrites those
+ * markers into hoverable popovers that show `content` and link back to
+ * the originating source via `sourceId` / `sourceName`.
+ */
+export interface Citation {
+  index: number;
+  sourceId: string;
+  sourceName: string;
+  content: string;
+}
+
 export interface ChatMessage {
   id: string;
   notebookId: string;
   role: "user" | "assistant";
   content: string;
+  /** Only populated for assistant messages that grounded their reply. */
+  citations?: Citation[];
   createdAt: string;
 }

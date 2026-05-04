@@ -10,6 +10,7 @@ import {
   listMessages,
   listSources,
 } from "../../lib/storage.ts";
+import { isFullyConfigured } from "../../lib/settings-guard.ts";
 import { SourcesPanel } from "../../islands/SourcesPanel.tsx";
 import { ChatPanel } from "../../islands/ChatPanel.tsx";
 import { StudioPanel } from "../../islands/StudioPanel.tsx";
@@ -17,7 +18,7 @@ import { StudioPanel } from "../../islands/StudioPanel.tsx";
 export const handler = define.handlers({
   async GET(ctx) {
     const settings = await getSettings();
-    if (!settings) {
+    if (!isFullyConfigured(settings)) {
       return new Response(null, {
         status: 302,
         headers: { Location: "/onboarding" },

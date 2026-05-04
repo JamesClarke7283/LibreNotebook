@@ -252,6 +252,18 @@ export function OnboardingForm({ initial }: Props) {
     );
   }
 
+  /** Discard pending embedding edits, restoring the original values. */
+  function resetEmbeddingToOriginal() {
+    const o = originalEmb.current;
+    emb.value = {
+      ...emb.value,
+      provider: o.provider as ProviderKind,
+      baseUrl: o.baseUrl,
+      model: o.model,
+      testResult: null,
+    };
+  }
+
   async function onSubmit(e: Event) {
     e.preventDefault();
     submitError.value = null;
@@ -262,15 +274,9 @@ export function OnboardingForm({ initial }: Props) {
           "with the new model.\n\nProceed?",
       );
       if (!ok) {
-        // Revert embedding settings to their original values.
-        const o = originalEmb.current;
-        emb.value = {
-          ...emb.value,
-          provider: o.provider as ProviderKind,
-          baseUrl: o.baseUrl,
-          model: o.model,
-          testResult: null,
-        };
+        // User declined the wipe. Keep their pending edits so they can
+        // change their mind — they can use the "Reset" button next to
+        // the embedding model to restore the originals if they want.
         return;
       }
     }
@@ -344,6 +350,8 @@ export function OnboardingForm({ initial }: Props) {
         onNumCtxCustom={(v) =>
           (llm.value = { ...llm.value, numCtxCustom: v })}
         onTest={() => testConnection(llm)}
+        showReset={false}
+        onReset={() => {}}
       />
       <ProviderBlock
         title="Embedding model"
@@ -358,6 +366,8 @@ export function OnboardingForm({ initial }: Props) {
         onNumCtxMode={() => {}}
         onNumCtxCustom={() => {}}
         onTest={() => testConnection(emb)}
+        showReset={isEditing && embeddingChanged()}
+        onReset={resetEmbeddingToOriginal}
       />
 
       {submitError.value && (
@@ -410,6 +420,9 @@ interface BlockProps {
   onNumCtxMode: (m: "auto" | "custom") => void;
   onNumCtxCustom: (v: string) => void;
   onTest: () => void;
+  /** Show a "Reset to original" link by the model field (embedding only). */
+  showReset: boolean;
+  onReset: () => void;
 }
 
 function ProviderBlock(props: BlockProps) {
@@ -482,9 +495,21 @@ function ProviderBlock(props: BlockProps) {
       </div>
 
       <div>
-        <span class="block text-xs uppercase tracking-wide text-zinc-500 mb-1">
-          Model
-        </span>
+        <div class="flex items-center justify-between mb-1">
+          <span class="block text-xs uppercase tracking-wide text-zinc-500">
+            Model
+          </span>
+          {props.showReset && (
+            <button
+              type="button"
+              onClick={props.onReset}
+              class="text-[10px] text-zinc-400 hover:text-zinc-200 underline-offset-2 hover:underline"
+              title="Restore the previously saved embedding model"
+            >
+              Reset to original
+            </button>
+          )}
+        </div>
         <ModelCombobox
           value={state.model}
           onInput={props.onModel}
@@ -670,6 +695,12 @@ function Field({
         value={value}
         placeholder={placeholder}
         onInput={(e) => onInput((e.currentTarget as HTMLInputElement).value)}
+        // Don't let Enter inside a field implicitly submit the form —
+        // that's how users were accidentally triggering the
+        // embedding-change wipe dialog while editing.
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.preventDefault();
+        }}
         class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
       />
     </label>

@@ -11,14 +11,14 @@ import {
   PlusIcon,
   SearchIcon,
 } from "../../components/Icons.tsx";
-import { listNotebooks } from "../../lib/storage.ts";
-import { getSettings } from "../../lib/storage.ts";
+import { getSettings, listNotebooks } from "../../lib/storage.ts";
+import { isFullyConfigured } from "../../lib/settings-guard.ts";
 import { NotebookGrid } from "../../islands/NotebookGrid.tsx";
 
 export const handler = define.handlers({
   async GET() {
     const settings = await getSettings();
-    if (!settings) {
+    if (!isFullyConfigured(settings)) {
       return new Response(null, {
         status: 302,
         headers: { Location: "/onboarding" },

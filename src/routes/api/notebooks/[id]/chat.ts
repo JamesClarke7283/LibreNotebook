@@ -1,5 +1,6 @@
-// POST a chat message. Streams the assistant reply as plain-text chunks.
-// The user message and the assistant reply are persisted to KV.
+// POST a chat message. Streams an NDJSON response carrying both the
+// retrieved citation metadata and the assistant's answer tokens. The
+// final assistant message (text + citations) is persisted to KV.
 
 import { define } from "../../../../utils.ts";
 import {
@@ -9,6 +10,7 @@ import {
   listMessages,
 } from "../../../../lib/storage.ts";
 import { streamRagAnswer } from "../../../../lib/rag.ts";
+import type { Citation } from "../../../../lib/types.ts";
 
 export const handler = define.handlers({
   async POST(ctx) {
@@ -32,43 +34,62 @@ export const handler = define.handlers({
     const history = await listMessages(notebookId);
     await addMessage({ notebookId, role: "user", content: message });
 
-    const upstream = await streamRagAnswer(
+    const handle = await streamRagAnswer(
       settings,
       notebookId,
       history,
       message,
     );
 
-    // Tee the stream so we can both forward to the client and accumulate
-    // the assistant's full reply for persistence.
-    const [forClient, forSave] = upstream.tee();
+    // Tee the stream so we both forward to the client and parse for
+    // persistence (extracting just the assistant text).
+    const [forClient, forSave] = handle.stream.tee();
 
     queueMicrotask(async () => {
-      const reader = forSave.getReader();
-      const decoder = new TextDecoder();
-      let acc = "";
+      let text = "";
+      const citations: Citation[] = [...handle.citations];
       try {
+        const reader = forSave.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
         // deno-lint-ignore no-constant-condition
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          acc += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nl);
+            buffer = buffer.slice(nl + 1);
+            if (!line.trim()) continue;
+            try {
+              const m = JSON.parse(line) as
+                | { type: "citations"; citations: Citation[] }
+                | { type: "token"; text: string }
+                | { type: "done" }
+                | { type: "error"; error: string };
+              if (m.type === "token") text += m.text;
+            } catch {
+              // ignore malformed line
+            }
+          }
         }
-        if (acc.trim()) {
+        if (text.trim()) {
           await addMessage({
             notebookId,
             role: "assistant",
-            content: acc,
+            content: text,
+            citations: citations.length > 0 ? citations : undefined,
           });
         }
       } catch {
-        // Persistence failure is non-fatal for the user-facing stream.
+        // persistence failure is non-fatal
       }
     });
 
     return new Response(forClient, {
       headers: {
-        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Type": "application/x-ndjson; charset=utf-8",
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
       },

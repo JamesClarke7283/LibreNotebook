@@ -4,11 +4,12 @@
 
 import { define } from "../../utils.ts";
 import { createNotebook, getSettings } from "../../lib/storage.ts";
+import { isFullyConfigured } from "../../lib/settings-guard.ts";
 
 export const handler = define.handlers({
   async GET() {
     const settings = await getSettings();
-    if (!settings) {
+    if (!isFullyConfigured(settings)) {
       return new Response(null, {
         status: 302,
         headers: { Location: "/onboarding" },

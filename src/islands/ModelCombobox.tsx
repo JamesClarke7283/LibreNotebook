@@ -53,6 +53,14 @@ export function ModelCombobox(props: Props) {
             props.onInput((e.currentTarget as HTMLInputElement).value);
             setOpen(true);
           }}
+          // Suppress the form's implicit submit-on-Enter; close the
+          // dropdown instead.
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              setOpen(false);
+            }
+          }}
           class="flex-1 bg-transparent px-2 py-2 text-sm text-zinc-100 outline-none"
         />
         <button

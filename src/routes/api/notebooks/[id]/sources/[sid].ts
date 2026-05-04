@@ -1,17 +1,23 @@
-// DELETE /api/notebooks/:id/sources/:sid — remove a source plus its
-// indexed chunks and any extracted images.
+// /api/notebooks/:id/sources/:sid
+//   GET    → return the full source record (used by the citation drawer)
+//   DELETE → remove a source plus its indexed chunks and extracted images
 
 import { define } from "../../../../../utils.ts";
 import { deleteSource, getSource } from "../../../../../lib/storage.ts";
 import { removeSource as removeFromVectors } from "../../../../../lib/vectorstore.ts";
 
 export const handler = define.handlers({
+  async GET(ctx) {
+    const { id: notebookId, sid: sourceId } = ctx.params;
+    const source = await getSource(notebookId, sourceId);
+    if (!source) return new Response("Not found", { status: 404 });
+    return Response.json(source);
+  },
+
   async DELETE(ctx) {
     const { id: notebookId, sid: sourceId } = ctx.params;
     const existing = await getSource(notebookId, sourceId);
     if (!existing) return new Response("Not found", { status: 404 });
-    // Vector cleanup first; if it fails we still want the user-facing
-    // record gone, so swallow errors.
     try {
       await removeFromVectors(notebookId, sourceId);
     } catch {

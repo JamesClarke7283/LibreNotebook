@@ -1,10 +1,9 @@
 // Top app bar. Variants:
-//   - "dashboard" — used on /notebooks (logo + Settings + apps + avatar).
-//   - "notebook"  — used on /notebooks/:id (notebook title + Create + Share + Settings).
+//   - "dashboard" — used on /notebooks (logo + Settings).
+//   - "notebook"  — used on /notebooks/:id (title + Create + Share + Settings).
 
 import { Logo } from "./Logo.tsx";
-import { AppsIcon, SettingsIcon, ShareIcon } from "./Icons.tsx";
-import { PlusIcon } from "./Icons.tsx";
+import { PlusIcon, SettingsIcon, ShareIcon } from "./Icons.tsx";
 
 interface DashboardHeaderProps {
   variant?: "dashboard";
@@ -66,16 +65,6 @@ export function Header(props: Props) {
           <SettingsIcon size={16} />
           <span>Settings</span>
         </a>
-        <button
-          type="button"
-          class="p-2 rounded-full hover:bg-zinc-800"
-          aria-label="App menu"
-        >
-          <AppsIcon size={18} />
-        </button>
-        <div class="w-9 h-9 rounded-full bg-emerald-700 text-white grid place-items-center text-sm font-medium">
-          J
-        </div>
       </div>
     </header>
   );
