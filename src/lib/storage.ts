@@ -10,6 +10,7 @@ import type {
   ChatMessage,
   Notebook,
   NotebookSource,
+  StudioItem,
 } from "./types.ts";
 
 const DATA_DIR = join(Deno.cwd(), ".data");
@@ -98,7 +99,18 @@ export async function createNotebook(
 
 export async function updateNotebook(
   id: string,
-  patch: Partial<Pick<Notebook, "title" | "sourceCount">>,
+  patch: Partial<
+    Pick<
+      Notebook,
+      | "title"
+      | "sourceCount"
+      | "summary"
+      | "suggestedQuestions"
+      | "summaryGeneratedAt"
+      | "summaryStatus"
+      | "summaryError"
+    >
+  >,
 ): Promise<Notebook | null> {
   const existing = await getNotebook(id);
   if (!existing) return null;
@@ -245,4 +257,78 @@ export async function addMessage(
   const existing = await listMessages(message.notebookId);
   await writeJson(messagesFile(message.notebookId), [...existing, stored]);
   return stored;
+}
+
+// ---------- Studio items ----------
+
+function studioDir(notebookId: string): string {
+  return join(notebookDir(notebookId), "studio");
+}
+
+export async function listStudioItems(
+  notebookId: string,
+): Promise<StudioItem[]> {
+  let files: string[] = [];
+  try {
+    files = await readdir(studioDir(notebookId));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const out: StudioItem[] = [];
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    const it = await readJsonOrNull<StudioItem>(
+      join(studioDir(notebookId), f),
+    );
+    if (it) out.push(it);
+  }
+  // Newest first.
+  out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return out;
+}
+
+export function getStudioItem(
+  notebookId: string,
+  id: string,
+): Promise<StudioItem | null> {
+  return readJsonOrNull<StudioItem>(join(studioDir(notebookId), `${id}.json`));
+}
+
+export async function addStudioItem(
+  item: Omit<StudioItem, "id" | "createdAt" | "updatedAt">,
+): Promise<StudioItem> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const stored: StudioItem = { ...item, id, createdAt: now, updatedAt: now };
+  await writeJson(join(studioDir(item.notebookId), `${id}.json`), stored);
+  return stored;
+}
+
+export async function updateStudioItem(
+  notebookId: string,
+  id: string,
+  patch: Partial<StudioItem>,
+): Promise<StudioItem | null> {
+  const existing = await getStudioItem(notebookId, id);
+  if (!existing) return null;
+  const merged: StudioItem = {
+    ...existing,
+    ...patch,
+    id: existing.id,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeJson(join(studioDir(notebookId), `${id}.json`), merged);
+  return merged;
+}
+
+export async function deleteStudioItem(
+  notebookId: string,
+  id: string,
+): Promise<void> {
+  try {
+    await rm(join(studioDir(notebookId), `${id}.json`));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }

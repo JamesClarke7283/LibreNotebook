@@ -5,16 +5,27 @@
 // `[N]` markers inline as hover popovers showing the chunk preview, and
 // open the SourceViewer drawer on click — there the full source is shown
 // with the cited chunk highlighted in context.
+//
+// At the top of the panel we surface the auto-generated notebook summary
+// (with three clickable suggested-question pills) and at the bottom we
+// mount the Customise-Infographic modal that opens in response to a
+// `librenotebook:studio-action` event from StudioPanel.
 
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-import type { ChatMessage, Citation } from "../lib/types.ts";
+import type {
+  ChatMessage,
+  Citation,
+  SummaryStatus,
+} from "../lib/types.ts";
 import {
   ArrowRightIcon,
   MoreVerticalIcon,
   SparklesIcon,
 } from "../components/Icons.tsx";
 import { SourceViewer } from "./SourceViewer.tsx";
+import { MermaidView } from "./MermaidView.tsx";
+import { InfographicModal } from "./InfographicModal.tsx";
 
 interface Props {
   notebookId: string;
@@ -22,6 +33,10 @@ interface Props {
   notebookCreated: string;
   sourceCount: number;
   initialMessages: ChatMessage[];
+  initialSummary: string | null;
+  initialSuggestedQuestions: string[];
+  initialSummaryStatus: SummaryStatus;
+  initialSummaryError: string | null;
 }
 
 type StreamEvent =
@@ -37,11 +52,86 @@ export function ChatPanel(props: Props) {
   const openCitation = useSignal<Citation | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
 
+  // Notebook summary state.
+  const summary = useSignal<string | null>(props.initialSummary);
+  const suggestedQuestions = useSignal<string[]>(
+    props.initialSuggestedQuestions,
+  );
+  const summaryStatus = useSignal<SummaryStatus>(props.initialSummaryStatus);
+  const summaryError = useSignal<string | null>(props.initialSummaryError);
+
+  // Infographic modal visibility — flipped by the `librenotebook:studio-action`
+  // event dispatched from StudioPanel when the user clicks a tile.
+  const infographicOpen = useSignal(false);
+
+  useEffect(() => {
+    function onAction(e: Event) {
+      const detail = (e as CustomEvent<{ key: string }>).detail;
+      if (detail?.key === "infographic") infographicOpen.value = true;
+    }
+    globalThis.addEventListener("librenotebook:studio-action", onAction);
+    return () =>
+      globalThis.removeEventListener("librenotebook:studio-action", onAction);
+  }, []);
+
+  // Poll /summary while the server is generating. Stops as soon as the
+  // status flips to "idle" (success) or "failed".
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    async function tick() {
+      try {
+        const res = await fetch(`/api/notebooks/${props.notebookId}/summary`);
+        if (res.ok && !cancelled) {
+          const data = await res.json() as {
+            summary: string | null;
+            suggestedQuestions: string[];
+            summaryStatus: SummaryStatus;
+            summaryError: string | null;
+          };
+          summary.value = data.summary;
+          suggestedQuestions.value = data.suggestedQuestions;
+          summaryStatus.value = data.summaryStatus;
+          summaryError.value = data.summaryError;
+        }
+      } catch {
+        // ignore; try again next tick
+      }
+      if (cancelled) return;
+      if (summaryStatus.value === "generating") {
+        timer = setTimeout(tick, 2_000) as unknown as number;
+      }
+    }
+    if (summaryStatus.value === "generating") tick();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [props.notebookId]);
+
+  async function retrySummary() {
+    summaryStatus.value = "generating";
+    summaryError.value = null;
+    try {
+      await fetch(`/api/notebooks/${props.notebookId}/summary`, {
+        method: "POST",
+      });
+    } catch (err) {
+      summaryStatus.value = "failed";
+      summaryError.value = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   function scrollToBottom() {
     queueMicrotask(() => {
       const el = scrollerRef.current;
       if (el) el.scrollTop = el.scrollHeight;
     });
+  }
+
+  function sendDirect(text: string) {
+    draft.value = text;
+    void send();
   }
 
   async function send() {
@@ -129,7 +219,7 @@ export function ChatPanel(props: Props) {
   }
 
   return (
-    <section class="rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col min-h-[70vh]">
+    <section class="relative rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col min-h-[70vh]">
       <header class="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
         <h2 class="text-zinc-100 font-medium">Chat</h2>
         <button
@@ -154,22 +244,38 @@ export function ChatPanel(props: Props) {
           </button>
         </div>
 
-        {messages.value.length === 0
-          ? (
-            <div class="text-center max-w-md mx-auto mt-8 text-zinc-300">
-              <h3 class="text-2xl font-medium mb-1">{props.notebookTitle}</h3>
-              <p class="text-xs text-zinc-500">
-                {props.sourceCount}{" "}
-                {props.sourceCount === 1 ? "source" : "sources"} ·{" "}
-                {props.notebookCreated}
-              </p>
-              <p class="mt-8 text-sm text-zinc-400">
-                Add a source on the left, then ask a question down here.
-              </p>
-            </div>
-          )
-          : (
-            <ul class="space-y-4 max-w-3xl mx-auto">
+        <div class="max-w-3xl mx-auto">
+          <header class="mb-6">
+            <h3 class="text-2xl font-medium text-zinc-100 mb-1">
+              {props.notebookTitle}
+            </h3>
+            <p class="text-xs text-zinc-500">
+              {props.sourceCount}{" "}
+              {props.sourceCount === 1 ? "source" : "sources"} ·{" "}
+              {props.notebookCreated}
+            </p>
+          </header>
+
+          {/* Auto-summary block (NotebookLM-style overview + 3 question pills). */}
+          <SummaryBlock
+            status={summaryStatus.value}
+            summary={summary.value}
+            error={summaryError.value}
+            sourceCount={props.sourceCount}
+            suggestedQuestions={suggestedQuestions.value}
+            onAskQuestion={sendDirect}
+            onRetry={retrySummary}
+          />
+
+          {messages.value.length === 0 && summaryStatus.value === "idle" &&
+            !summary.value && (
+            <p class="mt-8 text-sm text-zinc-400 text-center">
+              Add a source on the left, then ask a question down here.
+            </p>
+          )}
+
+          {messages.value.length > 0 && (
+            <ul class="space-y-4 mt-4">
               {messages.value.map((m) => (
                 <MessageBubble
                   key={m.id}
@@ -179,6 +285,7 @@ export function ChatPanel(props: Props) {
               ))}
             </ul>
           )}
+        </div>
       </div>
 
       <div class="border-t border-zinc-800/60 p-3">
@@ -214,7 +321,144 @@ export function ChatPanel(props: Props) {
         citation={openCitation.value}
         onClose={() => (openCitation.value = null)}
       />
+
+      {/* Customise-Infographic modal. Visibility flipped by the
+          librenotebook:studio-action event from StudioPanel. */}
+      <InfographicModal
+        notebookId={props.notebookId}
+        open={infographicOpen.value}
+        onClose={() => (infographicOpen.value = false)}
+        onFinalised={(message) => {
+          messages.value = [...messages.value, message];
+          infographicOpen.value = false;
+          scrollToBottom();
+        }}
+      />
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Summary block + suggestion pills
+// ---------------------------------------------------------------------------
+
+function SummaryBlock(
+  { status, summary, error, sourceCount, suggestedQuestions, onAskQuestion, onRetry }: {
+    status: SummaryStatus;
+    summary: string | null;
+    error: string | null;
+    sourceCount: number;
+    suggestedQuestions: string[];
+    onAskQuestion: (q: string) => void;
+    onRetry: () => void;
+  },
+) {
+  if (status === "generating" && !summary) {
+    return (
+      <div class="rounded-xl bg-zinc-900/40 border border-zinc-800 p-5 my-4 flex items-center gap-3 text-zinc-300">
+        <Spinner size={14} />
+        <span class="text-sm">Summarising your sources…</span>
+      </div>
+    );
+  }
+  if (status === "failed" && !summary) {
+    return (
+      <div class="rounded-xl bg-red-950/30 border border-red-900/60 p-5 my-4 text-sm text-red-300 flex items-center justify-between gap-3">
+        <span>Summary failed: {error ?? "unknown error"}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          class="text-xs text-red-200 underline-offset-2 hover:underline"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (!summary) return null;
+  return (
+    <div class="my-4 space-y-4">
+      <p class="text-[15px] leading-relaxed text-zinc-200">
+        {renderBoldMarkdown(summary)}
+      </p>
+      <div class="flex items-center gap-2 text-zinc-400">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 text-xs border border-zinc-800 rounded-full px-3 py-1 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          📌 Save to note
+        </button>
+        <button
+          type="button"
+          class="p-1.5 rounded-full hover:bg-zinc-800 hover:text-zinc-200"
+          aria-label="Helpful"
+        >
+          👍
+        </button>
+        <button
+          type="button"
+          class="p-1.5 rounded-full hover:bg-zinc-800 hover:text-zinc-200"
+          aria-label="Not helpful"
+        >
+          👎
+        </button>
+        <span class="text-[11px] text-zinc-500 ml-auto">
+          based on {sourceCount} source{sourceCount === 1 ? "" : "s"}
+        </span>
+      </div>
+      {suggestedQuestions.length > 0 && (
+        <ul class="space-y-2">
+          {suggestedQuestions.map((q) => (
+            <li key={q}>
+              <button
+                type="button"
+                onClick={() => onAskQuestion(q)}
+                class="w-full text-left text-sm text-zinc-200 px-4 py-3 rounded-xl bg-zinc-800/40 border border-zinc-800 hover:border-zinc-600 hover:bg-zinc-800"
+              >
+                {q}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Tiny markdown renderer: only handles `**bold**` runs. Returns Preact
+ * children rather than dangerous HTML to keep XSS off the table.
+ */
+function renderBoldMarkdown(text: string): preact.ComponentChildren {
+  const out: preact.ComponentChild[] = [];
+  let i = 0;
+  let key = 0;
+  const re = /\*\*(.+?)\*\*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > i) out.push(text.slice(i, m.index));
+    out.push(<strong key={`b${key++}`}>{m[1]}</strong>);
+    i = m.index + m[0].length;
+  }
+  if (i < text.length) out.push(text.slice(i));
+  return out;
+}
+
+function Spinner({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      class="animate-spin"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="3"
+      stroke-linecap="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+    </svg>
   );
 }
 
@@ -228,6 +472,9 @@ function MessageBubble(
     "bg-zinc-800/80 text-zinc-100 ml-auto max-w-[80%]";
   const aiClass =
     "bg-zinc-900 border border-zinc-800 text-zinc-200 mr-auto max-w-[90%]";
+  const segments = m.content
+    ? splitOutMermaidBlocks(m.content)
+    : [];
   return (
     <li class="flex">
       <div
@@ -236,11 +483,49 @@ function MessageBubble(
         }`}
       >
         {m.content
-          ? renderWithCitations(m.content, m.citations ?? [], onOpenCitation)
+          ? segments.map((seg, idx) =>
+            seg.kind === "mermaid"
+              ? <MermaidView key={`mer${idx}`} code={seg.text} />
+              : (
+                <span key={`txt${idx}`}>
+                  {renderWithCitations(
+                    seg.text,
+                    m.citations ?? [],
+                    onOpenCitation,
+                  )}
+                </span>
+              )
+          )
           : <span class="opacity-60 inline-block animate-pulse">…</span>}
       </div>
     </li>
   );
+}
+
+/**
+ * Split a streamed message into a sequence of plain-text and mermaid
+ * segments. Recognises ```mermaid ... ``` fences (with or without a
+ * trailing language line) and treats everything else as plain text that
+ * still flows through `renderWithCitations`.
+ */
+function splitOutMermaidBlocks(
+  text: string,
+): Array<{ kind: "text" | "mermaid"; text: string }> {
+  const out: Array<{ kind: "text" | "mermaid"; text: string }> = [];
+  const re = /```mermaid\s*\n([\s\S]*?)```/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      out.push({ kind: "text", text: text.slice(last, m.index) });
+    }
+    out.push({ kind: "mermaid", text: m[1].trim() });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    out.push({ kind: "text", text: text.slice(last) });
+  }
+  return out;
 }
 
 /**

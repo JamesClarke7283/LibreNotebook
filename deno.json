@@ -42,7 +42,8 @@
     "@langchain/classic/": "npm:/@langchain/classic@^1.0.32/",
     "pdfjs-dist": "npm:pdfjs-dist@^5.7.284",
     "pdfjs-dist/": "npm:/pdfjs-dist@^5.7.284/",
-    "pngjs": "npm:pngjs@^7.0.0"
+    "pngjs": "npm:pngjs@^7.0.0",
+    "mermaid": "npm:mermaid@^11.6.0"
   },
   "compilerOptions": {
     "lib": [

@@ -4,6 +4,7 @@
 
 import { Logo } from "./Logo.tsx";
 import { PlusIcon, SettingsIcon, ShareIcon } from "./Icons.tsx";
+import { NotebookTitleEdit } from "../islands/NotebookTitleEdit.tsx";
 
 interface DashboardHeaderProps {
   variant?: "dashboard";
@@ -11,6 +12,8 @@ interface DashboardHeaderProps {
 interface NotebookHeaderProps {
   variant: "notebook";
   title: string;
+  /** When provided, the title becomes inline-editable. */
+  notebookId?: string;
 }
 
 type Props = DashboardHeaderProps | NotebookHeaderProps;
@@ -25,9 +28,18 @@ export function Header(props: Props) {
               <a href="/notebooks" class="text-zinc-300 hover:text-white">
                 <Logo size={26} />
               </a>
-              <h1 class="text-lg font-medium truncate max-w-[40ch]">
-                {props.title}
-              </h1>
+              {props.notebookId
+                ? (
+                  <NotebookTitleEdit
+                    notebookId={props.notebookId}
+                    initial={props.title}
+                  />
+                )
+                : (
+                  <h1 class="text-lg font-medium truncate max-w-[40ch]">
+                    {props.title}
+                  </h1>
+                )}
             </>
           )
           : (

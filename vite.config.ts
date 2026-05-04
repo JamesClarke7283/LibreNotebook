@@ -19,6 +19,9 @@ export default defineConfig({
       "@langchain/textsplitters",
       "pdfjs-dist",
       "pngjs",
+      // Mermaid is browser-only; keep Vite's SSR pipeline from trying to
+      // bundle d3/dagre transitively.
+      "mermaid",
     ],
   },
   plugins: [

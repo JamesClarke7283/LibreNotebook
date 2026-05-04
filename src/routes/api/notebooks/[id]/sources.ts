@@ -73,11 +73,11 @@ export const handler = define.handlers({
     const notebookId = ctx.params.id;
     const ct = ctx.req.headers.get("content-type") ?? "";
 
+    // The JSON path (text / url) only ever fills these three; the PDF
+    // path returns early with its own response.
     let kind: SourceKind;
     let name: string;
     let content: string;
-    let images: NotebookSource["images"];
-    let pageCount: number | undefined;
 
     try {
       if (ct.startsWith("multipart/form-data")) {
@@ -92,40 +92,29 @@ export const handler = define.handlers({
           });
         }
         const bytes = new Uint8Array(await file.arrayBuffer());
-        kind = "pdf";
-        name = file.name;
-        // Pre-create the source ID by writing first with a placeholder,
-        // because extractPdf wants to know where to drop images. We
-        // generate a UUID up-front, then add the source with that id.
-        const sourceId = crypto.randomUUID();
-        const imgDir = imagesDir(notebookId, sourceId);
-        const result = await extractPdf(bytes, imgDir);
-        content = result.text;
-        images = result.images;
-        pageCount = result.pageCount;
-        // We can't pass the pre-chosen id into addSource cleanly; instead
-        // update the source record's id manually below.
+        // Create the source record first so we own its real id, then
+        // extract straight into the canonical images folder. (Old flow
+        // used two UUIDs + Deno.rename, which silently broke for PDFs
+        // with no embedded images.)
         const created = await addSource({
           notebookId,
-          name,
-          kind,
-          content,
-          images,
-          pageCount,
+          name: file.name,
+          kind: "pdf",
+          content: "",
+          images: [],
           status: "pending",
         });
-        // The image folder was written under `sourceId` but the source
-        // got a different generated id from addSource. Re-link by
-        // moving the folder. (We do this rather than pre-allocating a
-        // matching id to keep addSource's contract simple.)
-        if (images && images.length > 0 && created.id !== sourceId) {
-          await Deno.rename(
-            imgDir,
-            imagesDir(notebookId, created.id),
-          ).catch(() => {});
-        }
-        kickOffIngest(created);
-        return Response.json(created, { status: 202 });
+        const result = await extractPdf(
+          bytes,
+          imagesDir(notebookId, created.id),
+        );
+        const final = await updateSource(notebookId, created.id, {
+          content: result.text,
+          images: result.images,
+          pageCount: result.pageCount,
+        }) ?? created;
+        kickOffIngest(final);
+        return Response.json(final, { status: 202 });
       }
 
       // JSON path.

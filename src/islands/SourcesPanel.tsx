@@ -294,7 +294,7 @@ function SourceItem(
 
   return (
     <li class="flex items-start gap-2 px-3 py-2 rounded-md bg-zinc-800/40 border border-zinc-800 group">
-      <FileIcon size={16} class="text-zinc-400 mt-0.5 shrink-0" />
+      <SourceLeadIcon source={source} />
       <div class="min-w-0 flex-1">
         <p class="text-sm text-zinc-100 truncate">{source.name}</p>
         <div class="flex items-center gap-2 mt-0.5">
@@ -322,6 +322,42 @@ function SourceItem(
       </button>
     </li>
   );
+}
+
+/**
+ * Build a Google s2 favicon URL for a source whose name is a URL. Returns
+ * null on parse failure (so the caller can fall back to the file icon).
+ */
+function urlFavicon(url: string): string | null {
+  try {
+    return `https://www.google.com/s2/favicons?sz=32&domain=${
+      encodeURIComponent(new URL(url).hostname)
+    }`;
+  } catch {
+    return null;
+  }
+}
+
+function SourceLeadIcon({ source }: { source: NotebookSource }) {
+  const fav = source.kind === "url" ? urlFavicon(source.name) : null;
+  if (fav) {
+    return (
+      <img
+        src={fav}
+        alt=""
+        width={16}
+        height={16}
+        class="mt-0.5 shrink-0 rounded-sm"
+        onError={(e) => {
+          // Hide the broken image and let the next render show the
+          // fallback (we don't currently re-render, but most browsers
+          // will keep a 16×16 transparent placeholder which is fine).
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+      />
+    );
+  }
+  return <FileIcon size={16} class="text-zinc-400 mt-0.5 shrink-0" />;
 }
 
 function StatusBadge({ source }: { source: NotebookSource }) {

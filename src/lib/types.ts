@@ -35,12 +35,53 @@ export interface AppSettings {
   configuredAt: string;
 }
 
+/** Auto-generated notebook overview shown at the top of the chat. */
+export type SummaryStatus = "idle" | "generating" | "failed";
+
 export interface Notebook {
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   sourceCount: number;
+  /** 1–2 paragraph summary, with **bold** key terms (rendered client-side). */
+  summary?: string;
+  /** Up to 3 short questions a user might ask. */
+  suggestedQuestions?: string[];
+  summaryGeneratedAt?: string;
+  summaryStatus?: SummaryStatus;
+  summaryError?: string;
+}
+
+// ---------- Studio items ---------------------------------------------------
+
+export type StudioItemKind = "infographic" | "audio" | "report";
+export type StudioItemStatus = "generating" | "ready" | "failed";
+
+/**
+ * One generation produced by the Studio palette (right pane). Currently
+ * only the Infographic tile creates these. The card in StudioPanel reads
+ * these directly; ChatPanel correlates by `messageId` when the user
+ * clicks a card.
+ */
+export interface StudioItem {
+  id: string;
+  notebookId: string;
+  kind: StudioItemKind;
+  /** "Generating infographic…" while in flight, then a derived title. */
+  title: string;
+  status: StudioItemStatus;
+  /** Snapshot of `notebook.sourceCount` at start time. */
+  basedOnSources: number;
+  /** Last refinement iteration (1..N). */
+  iteration?: number;
+  /** Final Mermaid code (for "infographic" kind, status === "ready"). */
+  mermaid?: string;
+  /** Chat message id where the rendered diagram lives. */
+  messageId?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type SourceKind = "text" | "url" | "pdf";
