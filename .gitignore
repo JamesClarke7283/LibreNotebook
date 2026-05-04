@@ -17,6 +17,9 @@ bin/
 .tmp/
 .storage/
 
+# LibreNotebook runtime data (Deno KV, vector store JSON)
+.data/
+
 # Logs
 *.log
 

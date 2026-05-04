@@ -22,7 +22,7 @@
     "**/_fresh/*"
   ],
   "imports": {
-    "@/": "./",
+    "@/": "./src/",
     "fresh": "jsr:@fresh/core@^2.3.3",
     "preact": "npm:preact@^10.29.1",
     "@preact/signals": "npm:@preact/signals@^2.9.0",
@@ -30,7 +30,16 @@
     "vite": "npm:vite@^7.1.3",
     "@types/babel__core": "npm:@types/babel__core@^7.20.5",
     "tailwindcss": "npm:tailwindcss@^4.1.10",
-    "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.1.12"
+    "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.1.12",
+    "langchain": "npm:langchain@^1.3.5",
+    "langchain/": "npm:/langchain@^1.3.5/",
+    "@langchain/core": "npm:@langchain/core@^1.1.44",
+    "@langchain/core/": "npm:/@langchain/core@^1.1.44/",
+    "@langchain/openai": "npm:@langchain/openai@^1.4.5",
+    "@langchain/ollama": "npm:@langchain/ollama@^1.2.7",
+    "@langchain/textsplitters": "npm:@langchain/textsplitters@^1.0.1",
+    "@langchain/classic": "npm:@langchain/classic@^1.0.32",
+    "@langchain/classic/": "npm:/@langchain/classic@^1.0.32/"
   },
   "compilerOptions": {
     "lib": [
