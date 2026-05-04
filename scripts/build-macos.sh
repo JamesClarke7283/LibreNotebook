@@ -185,13 +185,41 @@ ln -s /Applications "$DMG_STAGE/Applications"
 OUT="$DIST/LibreNotebook-${VERSION}-macos-${ARCHIVE_ARCH}.dmg"
 rm -f "$OUT"
 
+# Strip macOS extended attributes from the staging tree. Quarantine
+# / com.apple.provenance / FinderInfo flags get attached during
+# `cp -R` on some runners and trip hdiutil with "Resource busy".
+if command -v xattr >/dev/null 2>&1; then
+  xattr -cr "$DMG_STAGE" 2>/dev/null || true
+fi
+
+# Detach any leftover volume mount from a previous run with the same
+# volname — hdiutil rejects -srcfolder if a matching volume is busy.
+if [ -d "/Volumes/LibreNotebook ${VERSION}" ]; then
+  hdiutil detach "/Volumes/LibreNotebook ${VERSION}" -force 2>/dev/null || true
+fi
+
 if command -v hdiutil >/dev/null 2>&1; then
-  hdiutil create \
-    -volname "LibreNotebook ${VERSION}" \
-    -srcfolder "$DMG_STAGE" \
-    -ov \
-    -format UDZO \
-    "$OUT"
+  # Retry on "Resource busy" — flaky on GitHub-hosted macos-14 when
+  # a previous helper hasn't fully released the volume.
+  ok=0
+  for attempt in 1 2 3; do
+    if hdiutil create \
+        -volname "LibreNotebook ${VERSION}" \
+        -srcfolder "$DMG_STAGE" \
+        -ov \
+        -format UDZO \
+        "$OUT"; then
+      ok=1
+      break
+    fi
+    echo "hdiutil create attempt $attempt failed; sleeping then retrying" >&2
+    hdiutil detach "/Volumes/LibreNotebook ${VERSION}" -force 2>/dev/null || true
+    sleep 5
+  done
+  if [ "$ok" != "1" ]; then
+    echo "build-macos.sh: hdiutil create failed after 3 attempts." >&2
+    exit 1
+  fi
 elif command -v genisoimage >/dev/null 2>&1; then
   # Fallback for cross-build on Linux (image won't be a "real" Mac
   # DMG, but mounts on macOS as a UDF/ISO9660). Used for local

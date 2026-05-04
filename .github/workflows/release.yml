@@ -160,21 +160,36 @@ jobs:
           restore-keys: |
             deps-${{ matrix.target }}-
 
-      - name: Install npm deps
+      - name: Install deps
         shell: bash
         run: |
-          # `npm install` produces a standard flat node_modules that
-          # Vite's bundle-loader can resolve transitive deps from on
-          # every platform. Deno's auto-mode symlink layout is
-          # unreliable on Windows (transitive deps like
-          # `source-map-js`, `semver` resolve via the .deno/ subtree
-          # symlinks which Windows handles inconsistently). With
-          # nodeModulesDir set to "manual" in deno.json, Deno uses
-          # whatever this leaves at node_modules/.
-          # --legacy-peer-deps: better-auth's peerOptional on
-          # better-sqlite3@^12 conflicts with our pinned ^11. The
-          # peer is optional, so the conflict is benign.
+          # Three-step install. All are required:
+          #
+          # 1. npm install — produces a flat node_modules/<pkg>/ tree.
+          #    Vite (under Deno) and Deno's npm: resolver both walk
+          #    this for npm packages. The flat layout sidesteps Deno's
+          #    auto-mode symlink layout, which is unreliable on
+          #    Windows (NTFS junctions break Node's CJS require()
+          #    walk for transitives like source-map-js, semver, …).
+          #    --legacy-peer-deps: better-auth's peerOptional on
+          #    better-sqlite3@^12 conflicts with our pinned ^11. The
+          #    peer is optional so the conflict is benign.
           npm install --no-audit --no-fund --legacy-peer-deps
+          # 2. deno install — populates the global Deno cache with
+          #    jsr: specifiers and resolves jsr: → https: in
+          #    deno.lock. Without this, Vite's @deno/loader plugin
+          #    fails with "jsr: specifiers must be resolved to an
+          #    https: specifier before being loaded" when it hits
+          #    things like jsr:@fresh/core/runtime-client.
+          #    With nodeModulesDir: "manual" in deno.json this
+          #    *doesn't* touch node_modules — npm's flat layout
+          #    survives.
+          deno install
+          # 3. Fetch Neutralino native binaries into bin/. This dir
+          #    is gitignored (binaries are large and per-arch);
+          #    @neutralinojs/neu downloads the matching set on demand.
+          #    Required for windowed-mode bundling on every platform.
+          npx -y @neutralinojs/neu update
 
       # ---------------- Builds.
       - name: Build (Linux)
