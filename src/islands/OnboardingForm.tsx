@@ -334,6 +334,46 @@ export function OnboardingForm({ initial }: Props) {
     globalThis.location.href = returnUrlRef.current;
   }
 
+  /**
+   * Manual re-embed: wipes the entire vector database and re-embeds
+   * every source with the current embedding settings. Independent of
+   * the implicit reindex that fires on embedding-model change.
+   */
+  const reembedding = useSignal(false);
+  const reembedDone = useSignal<{ ok: boolean; message: string } | null>(null);
+  async function manualReembed() {
+    const ok = globalThis.confirm(
+      "Re-embed all sources?\n\n" +
+        "This wipes LibreNotebook's vector database and recomputes the " +
+        "embeddings for every source in every notebook using the current " +
+        "embedding model. The chat history is left alone; nothing else is lost.\n\n" +
+        "Continue?",
+    );
+    if (!ok) return;
+    reembedding.value = true;
+    reembedDone.value = null;
+    try {
+      const res = await fetch("/api/embeddings/reindex", { method: "POST" });
+      if (!res.ok) {
+        throw new Error(await res.text() || `HTTP ${res.status}`);
+      }
+      const data = await res.json() as { reindexing?: number };
+      reembedDone.value = {
+        ok: true,
+        message: `Re-embedding ${data.reindexing ?? 0} source${
+          data.reindexing === 1 ? "" : "s"
+        }… watch the banner at the top of the page.`,
+      };
+    } catch (err) {
+      reembedDone.value = {
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      reembedding.value = false;
+    }
+  }
+
   return (
     <form onSubmit={onSubmit} class="space-y-6">
       <ProviderBlock
@@ -374,6 +414,40 @@ export function OnboardingForm({ initial }: Props) {
         <div class="text-sm text-red-400 bg-red-950/40 border border-red-900 rounded-md px-3 py-2">
           {submitError.value}
         </div>
+      )}
+
+      {/* Re-embed everything. Orange so it stands out from Save / Cancel. */}
+      {isEditing && (
+        <fieldset class="rounded-2xl border border-orange-900/60 bg-orange-950/20 p-4 space-y-2">
+          <legend class="text-sm text-orange-200 px-1 font-medium">
+            Re-embed vector database
+          </legend>
+          <p class="text-xs text-orange-200/80">
+            Wipes the existing embeddings and recomputes them for every
+            source in every notebook using the current embedding model.
+            Use this if you've installed a new embedding model or notice
+            stale retrieval results.
+          </p>
+          <div class="flex items-center gap-3 pt-1">
+            <button
+              type="button"
+              onClick={manualReembed}
+              disabled={reembedding.value}
+              class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-orange-500 text-white text-sm font-medium hover:bg-orange-400 disabled:opacity-50"
+            >
+              {reembedding.value ? "Starting…" : "Re-embed all sources"}
+            </button>
+            {reembedDone.value && (
+              <span
+                class={`text-xs ${
+                  reembedDone.value.ok ? "text-emerald-300" : "text-red-300"
+                }`}
+              >
+                {reembedDone.value.message}
+              </span>
+            )}
+          </div>
+        </fieldset>
       )}
 
       <div class="flex items-center gap-3">

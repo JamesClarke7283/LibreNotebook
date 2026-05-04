@@ -339,6 +339,17 @@ function urlFavicon(url: string): string | null {
 }
 
 function SourceLeadIcon({ source }: { source: NotebookSource }) {
+  if (source.kind === "youtube") {
+    return (
+      <img
+        src="https://www.google.com/s2/favicons?sz=32&domain=youtube.com"
+        alt=""
+        width={16}
+        height={16}
+        class="mt-0.5 shrink-0 rounded-sm"
+      />
+    );
+  }
   const fav = source.kind === "url" ? urlFavicon(source.name) : null;
   if (fav) {
     return (

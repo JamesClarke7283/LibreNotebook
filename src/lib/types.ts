@@ -84,15 +84,20 @@ export interface StudioItem {
   updatedAt: string;
 }
 
-export type SourceKind = "text" | "url" | "pdf";
+export type SourceKind = "text" | "url" | "pdf" | "youtube";
 
 export interface SourceImage {
-  /** Filename within the source's images folder, e.g. "page-3-img-1.png". */
+  /** Filename within the source's images folder, e.g. "page-3-img-1.png"
+   *  for PDFs or "img-1.png" for webpages. */
   filename: string;
-  /** 1-based page number. */
+  /** 1-based page number for PDFs, 1 for single-page sources (webpages). */
   page: number;
   width: number;
   height: number;
+  /** Original web URL for webpage-extracted images (handy for citation). */
+  src?: string;
+  /** Alt text or caption when known. */
+  alt?: string;
 }
 
 /**

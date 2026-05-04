@@ -3,6 +3,12 @@
 // cite chunks inline as `[N]`, and streams an NDJSON response that
 // carries both the citation metadata and the answer tokens.
 //
+// When the configured chat model is vision-capable, we also attach
+// images extracted from the cited sources to the user message so the
+// model can "look at" the figures from PDFs / webpages while answering.
+// Text is the only thing that gets embedded; images ride along
+// in-context.
+//
 // Wire format (one JSON object per line, terminated by '\n'):
 //
 //   {"type":"citations","citations":[{index,sourceId,sourceName,content}, …]}
@@ -10,12 +16,15 @@
 //   {"type":"done"}
 //   {"type":"error","error":"…"}           // on failure (instead of done)
 
-import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import type { Document } from "@langchain/core/documents";
 import { buildChatModel } from "./llm.ts";
 import { buildEmbeddings } from "./embeddings.ts";
 import { similaritySearch } from "./vectorstore.ts";
+import { getSource, imagesDir } from "./storage.ts";
 import type { AppSettings, ChatMessage, Citation } from "./types.ts";
 
 const SYSTEM_PROMPT = `You are LibreNotebook, an open-source NotebookLM-style assistant.
@@ -25,15 +34,85 @@ information from an excerpt you MUST cite it inline using that tag, e.g.
 "the sky appears blue [1] because of Rayleigh scattering [2]". Cite the
 specific tag(s) for every factual claim.
 
-If the context does not contain the answer, say you don't have enough
-information in the saved sources to answer.
+You may also receive figures from those sources as images. When useful,
+incorporate what you see in the images into your answer. Cite the source
+they came from with the same [N] markers.
 
-Context:
-{context}`;
+If the context does not contain the answer, say you don't have enough
+information in the saved sources to answer.`;
+
+/** Total images we'll attach to a single chat turn (token-budget guard). */
+const MAX_IMAGES_PER_TURN = 6;
+/** Per-source cap so one image-heavy source can't crowd out others. */
+const MAX_IMAGES_PER_SOURCE = 3;
 
 export interface RagStreamHandle {
   stream: ReadableStream<Uint8Array>;
   citations: Citation[];
+}
+
+interface ImagePart {
+  type: "image_url";
+  image_url: { url: string };
+}
+
+/**
+ * Read each cited source, pull a few images off it, and return them as
+ * data-URL `image_url` content parts that LangChain can hand to either
+ * ChatOpenAI or ChatOllama. Returns an empty array when the LLM doesn't
+ * support vision.
+ */
+async function gatherSourceImages(
+  notebookId: string,
+  citations: Citation[],
+  hasVision: boolean,
+): Promise<ImagePart[]> {
+  if (!hasVision || citations.length === 0) return [];
+  const seen = new Set<string>();
+  const parts: ImagePart[] = [];
+  for (const c of citations) {
+    if (seen.has(c.sourceId)) continue;
+    seen.add(c.sourceId);
+    const src = await getSource(notebookId, c.sourceId);
+    if (!src?.images?.length) continue;
+    const dir = imagesDir(notebookId, c.sourceId);
+    for (const img of src.images.slice(0, MAX_IMAGES_PER_SOURCE)) {
+      if (parts.length >= MAX_IMAGES_PER_TURN) break;
+      try {
+        const bytes = await readFile(join(dir, img.filename));
+        const mime = img.filename.endsWith(".png")
+          ? "image/png"
+          : img.filename.endsWith(".webp")
+          ? "image/webp"
+          : img.filename.endsWith(".gif")
+          ? "image/gif"
+          : "image/jpeg";
+        const base64 = uint8ToBase64(bytes);
+        parts.push({
+          type: "image_url",
+          image_url: { url: `data:${mime};base64,${base64}` },
+        });
+      } catch {
+        // Missing or unreadable image — skip silently.
+      }
+    }
+    if (parts.length >= MAX_IMAGES_PER_TURN) break;
+  }
+  return parts;
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  // Avoid `String.fromCharCode(...bytes)` exploding the call stack on
+  // big buffers by chunking.
+  let s = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    s += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + chunk)),
+    );
+  }
+  return btoa(s);
 }
 
 export async function streamRagAnswer(
@@ -65,16 +144,41 @@ export async function streamRagAnswer(
     ? citations.map((c) => `[${c.index}] ${c.content}`).join("\n\n")
     : "(no saved sources yet — answer that the notebook has no sources)";
 
-  const prompt = ChatPromptTemplate.fromMessages([
-    ["system", SYSTEM_PROMPT],
-    ...history.slice(-10).map((m) =>
-      [m.role === "user" ? "human" : "ai", m.content] as [string, string]
-    ),
-    ["human", "{question}"],
-  ]);
+  const imageParts = await gatherSourceImages(
+    notebookId,
+    citations,
+    settings.llm.hasVision,
+  );
 
-  const chain = prompt.pipe(llm).pipe(new StringOutputParser());
-  const tokenStream = await chain.stream({ context, question });
+  // Build the message stack manually (rather than ChatPromptTemplate)
+  // because we need a multimodal `content: [...]` array on the user
+  // message — a shape ChatPromptTemplate's string templating doesn't
+  // model directly.
+  const messages: Array<SystemMessage | HumanMessage> = [
+    new SystemMessage(`${SYSTEM_PROMPT}\n\nContext:\n${context}`),
+  ];
+  for (const m of history.slice(-10)) {
+    if (m.role === "user") messages.push(new HumanMessage(m.content));
+    else {
+      // Treat assistant turns as plain SystemMessages addressed to the
+      // model — close enough for short histories and avoids importing
+      // AIMessage.
+      messages.push(new SystemMessage(`Previous assistant: ${m.content}`));
+    }
+  }
+  if (imageParts.length > 0) {
+    messages.push(new HumanMessage({
+      content: [
+        { type: "text", text: question },
+        ...imageParts,
+      ],
+    }));
+  } else {
+    messages.push(new HumanMessage(question));
+  }
+
+  const parser = new StringOutputParser();
+  const tokenStream = await llm.pipe(parser).stream(messages);
 
   const encoder = new TextEncoder();
   const writeLine = (

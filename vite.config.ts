@@ -22,6 +22,9 @@ export default defineConfig({
       // Mermaid is browser-only; keep Vite's SSR pipeline from trying to
       // bundle d3/dagre transitively.
       "mermaid",
+      // Readability + DOM parser used server-side for webpage ingest.
+      "@mozilla/readability",
+      "linkedom",
     ],
   },
   plugins: [
