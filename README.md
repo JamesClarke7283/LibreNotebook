@@ -8,8 +8,6 @@
 |-----------|---------------|
 | ![Main menu](docs/screenshots/main-menu.png) | ![Notebook view](docs/screenshots/notebook-view.png) |
 
-*(Placeholder PNGs ship with the repo — replace `docs/screenshots/main-menu.png` and `docs/screenshots/notebook-view.png` with real captures of your install.)*
-
 ---
 
 ## Features
