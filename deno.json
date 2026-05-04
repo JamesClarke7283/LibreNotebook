@@ -10,10 +10,14 @@
     "neu:build": "npx -y @neutralinojs/neu build --release",
     "neu:update": "npx -y @neutralinojs/neu update",
     "test": "deno test --allow-all --no-check tests/",
+    "test:unit": "deno test --allow-all --no-check tests/unit/",
+    "test:integration": "deno test --allow-all --no-check tests/integration/",
+    "test:e2e": "deno test --allow-all --no-check tests/0*.test.ts",
     "server": "deno serve -A _fresh/server.js",
     "compile": "bash scripts/build.sh",
     "build:deb": "bash scripts/build-deb.sh",
-    "build:appimage": "bash scripts/build-appimage.sh"
+    "build:appimage": "bash scripts/build-appimage.sh",
+    "build:rpm": "bash scripts/build-rpm.sh"
   },
   "lint": {
     "rules": {

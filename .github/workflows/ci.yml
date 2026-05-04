@@ -1,0 +1,75 @@
+name: CI
+
+# Run unit + integration tests on every push / PR. We skip the
+# Puppeteer e2e suite in CI by default — those tests need Chromium and
+# the dev server, which doubles the runtime; gate them behind the
+# `[e2e]` tag in the commit message when needed.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  unit:
+    name: Unit + integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Cache Deno deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            node_modules
+          key: deno-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-
+
+      - name: Pre-cache deps
+        run: deno cache --node-modules-dir=auto deno.json 2>/dev/null || true
+
+      - name: Run unit tests
+        run: deno task test:unit
+        env:
+          LOG_FILE: "0"
+          LOG_LEVEL: ERROR
+
+      - name: Run integration tests
+        run: deno task test:integration
+        env:
+          LOG_FILE: "0"
+          LOG_LEVEL: ERROR
+
+  e2e:
+    name: Puppeteer e2e
+    if: contains(github.event.head_commit.message, '[e2e]') || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install Chromium for Puppeteer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends chromium-browser || \
+            sudo apt-get install -y --no-install-recommends chromium
+
+      - name: Pre-cache deps
+        run: deno cache --node-modules-dir=auto deno.json 2>/dev/null || true
+
+      - name: Run e2e tests
+        run: deno task test:e2e
+        env:
+          CHROME_PATH: /usr/bin/chromium
+          LOG_FILE: "0"
+          LOG_LEVEL: ERROR

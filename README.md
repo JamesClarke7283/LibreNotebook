@@ -87,13 +87,17 @@ The first time you visit `/` you'll be sent to `/onboarding`. Configure your LLM
   brew install yt-dlp           # macOS
   ```
   If the binary lives somewhere unusual, point `$YT_DLP_PATH` at it. The server also auto-probes `~/.local/bin`, `~/bin`, and `/usr/local/bin`.
-- **`dpkg-deb`** (and `librsvg2-bin` for `rsvg-convert`) — required to build a `.deb`. Install with one of:
+- **Packaging deps** — only needed when running `deno task build:deb` / `build:rpm`:
   ```
-  pacman -S dpkg librsvg        # Arch
-  apt install dpkg-dev librsvg2-bin   # Debian / Ubuntu
-  brew install dpkg librsvg     # macOS
+  # Arch
+  pacman -S dpkg rpm-tools librsvg
+  # Debian / Ubuntu
+  apt install dpkg-dev rpm librsvg2-bin
+  # Fedora / RHEL
+  dnf install dpkg rpm-build librsvg2-tools
+  # macOS
+  brew install dpkg rpm librsvg
   ```
-  Not needed at runtime — only `deno task build:deb` calls them.
 
 ### Optional dependencies
 - **A Chromium-class browser for tests** — Puppeteer downloads its own by default. If you'd rather use a system Chrome, set `CHROME_PATH=/usr/bin/google-chrome` (or `/usr/bin/chromium`).
@@ -241,7 +245,16 @@ deno task build:deb
 # → dist/librenotebook_<version>_<arch>.deb
 ```
 
-Requires `dpkg-deb` (any Debian / Ubuntu derivative ships it) and `rsvg-convert` (`apt install librsvg2-bin`). Install with `sudo dpkg -i dist/librenotebook_*.deb`. Reverse-deps the package declares: `ca-certificates`, `libgtk-3-0`, `libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37`. `Recommends: yt-dlp` so apt nudges users to install it.
+Requires `dpkg-deb` (any Debian / Ubuntu derivative ships it; Arch users `pacman -S dpkg`) and `rsvg-convert` (`apt install librsvg2-bin` / `pacman -S librsvg`). Install with `sudo dpkg -i dist/librenotebook_*.deb`. Reverse-deps the package declares: `ca-certificates`, `libgtk-3-0`, `libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37`. `Recommends: yt-dlp` so apt nudges users to install it.
+
+### `.rpm`
+
+```bash
+deno task build:rpm
+# → dist/librenotebook-<version>-1.<arch>.rpm
+```
+
+Requires `rpmbuild` (`dnf install rpm-build` on Fedora/RHEL, `pacman -S rpm-tools` on Arch, `zypper install rpm-build` on openSUSE) plus the same `rsvg-convert`. Install with `sudo dnf install dist/librenotebook-*.rpm` (or `sudo rpm -ivh ...`). Declared deps mirror the `.deb`: `gtk3`, `(webkit2gtk4.1 or webkit2gtk4.0)`, with `Recommends: yt-dlp`.
 
 ### AppImage
 
@@ -271,11 +284,27 @@ Useful for poking at the unpackaged layout. Run `dist/AppDir/AppRun server` or `
 
 ## Tests
 
+LibreNotebook ships three test layers under `tests/`:
+
 ```bash
+# All layers
 deno task test
+
+# Just the unit layer (fastest — pure logic, no server, no browser)
+deno task test:unit
+
+# Integration tests against a live dev server
+deno task test:integration
+
+# Puppeteer end-to-end specs (headless Chromium)
+deno task test:e2e
 ```
 
-Three Puppeteer specs (`tests/01_onboarding.test.ts`, `tests/02_notebooks.test.ts`, `tests/03_chat.test.ts`) drive the dev server in headless Chromium. They spin the server up automatically; set `BASE_URL=http://localhost:5173` to reuse a running one. They mock the LLM / yt-dlp / settings APIs via `page.setRequestInterception` so no real provider is hit.
+**Unit (`tests/unit/`, ~33 cases, < 2 s)** — exercises the lib layer in isolation: `paths.ts` (platformdir resolution + legacy migration), `env-config.ts` (LLM/embedding/SMTP env presets, `MULTI_USER` parsing, lock state), `storage.ts` (notebook / source / message / studio-item CRUD against a temp dir), `infographic.ts` (`extractMermaid`, `deriveTitle`), `version.ts`, `settings-guard.ts`, `youtube.ts` (`isYouTubeUrl` + WebVTT parser).
+
+**Integration (`tests/integration/`)** — boots the dev server with `LIBRENOTEBOOK_DATA_DIR` pointed at a temp dir, then exercises the API surface end-to-end: `/api/notebooks` CRUD, `/api/settings` shape + lock state, `/api/test-connection` friendly-error mapping, `/api/notebooks/:id/sources` POST/GET/DELETE.
+
+**End-to-end (`tests/0[1-5]*.test.ts`)** — Puppeteer specs in headless Chromium covering the dashboard 3-dot menu, sort dropdown, onboarding form, chat NDJSON parsing, settings env-lock, and (when `MULTI_USER=1`) the sign-in / sign-up forms. Set `BASE_URL=http://localhost:5173` to reuse a running dev server. `CHROME_PATH=/usr/bin/chromium` lets you bypass Puppeteer's Chromium download.
 
 ---
 

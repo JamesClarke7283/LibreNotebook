@@ -62,12 +62,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             dpkg-dev \
+            rpm \
             librsvg2-bin \
             fuse \
             libfuse2 \
             file
           # appimagetool wants FUSE 2 to *run*; the produced AppImage
           # itself doesn't need it on user machines.
+          # `rpm` provides rpmbuild for the .rpm package.
 
       - name: Cache Deno deps
         if: steps.version.outputs.skip == 'false'
@@ -88,6 +90,10 @@ jobs:
         if: steps.version.outputs.skip == 'false'
         run: deno task build:deb
 
+      - name: Build .rpm
+        if: steps.version.outputs.skip == 'false'
+        run: deno task build:rpm
+
       - name: Build AppImage
         if: steps.version.outputs.skip == 'false'
         run: deno task build:appimage
@@ -106,7 +112,8 @@ jobs:
             Automated release for v${{ steps.version.outputs.new }}.
 
             **Downloads**
-            - `librenotebook_${{ steps.version.outputs.new }}_amd64.deb` — Debian / Ubuntu
+            - `librenotebook_${{ steps.version.outputs.new }}_amd64.deb` — Debian / Ubuntu / derivatives
+            - `librenotebook-${{ steps.version.outputs.new }}-1.x86_64.rpm` — Fedora / RHEL / openSUSE
             - `LibreNotebook-${{ steps.version.outputs.new }}-x86_64.AppImage` — any modern Linux distro
 
             See the [README](https://github.com/impulse/LibreNotebook#readme) for run modes and configuration.
@@ -114,5 +121,6 @@ jobs:
             License: AGPL-v3-or-later.
           files: |
             dist/librenotebook_${{ steps.version.outputs.new }}_amd64.deb
+            dist/librenotebook-${{ steps.version.outputs.new }}-1.x86_64.rpm
             dist/LibreNotebook-${{ steps.version.outputs.new }}-x86_64.AppImage
           fail_on_unmatched_files: true

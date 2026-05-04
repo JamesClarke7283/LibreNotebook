@@ -41,7 +41,9 @@ async function waitForServer(url: string, timeoutMs = 60_000): Promise<void> {
   throw new Error(`Dev server didn't come up at ${url} within ${timeoutMs}ms`);
 }
 
-export async function startServer(): Promise<string> {
+export async function startServer(
+  envOverrides: Record<string, string> = {},
+): Promise<string> {
   if (BASE_URL_ENV) {
     // Caller said "I've already started it"; just verify reachability.
     await waitForServer(BASE_URL_ENV);
@@ -50,9 +52,21 @@ export async function startServer(): Promise<string> {
   if (serverChild) return serverBaseUrl;
 
   // Spawn `deno task dev` and pipe its output for failures.
+  // We invert MULTI_USER and the LLM presets by default so integration
+  // / e2e tests don't get walled off by a user's local `.env`.
   const cmd = new Deno.Command("deno", {
     args: ["task", "dev"],
-    env: { LOG_FILE: "0", LOG_LEVEL: "WARN" },
+    env: {
+      LOG_FILE: "0",
+      LOG_LEVEL: "WARN",
+      MULTI_USER: "0",
+      // Wipe any preset that might be in .env so test fixtures govern.
+      LLM_BASE_URL: "",
+      LLM_MODEL: "",
+      EMBEDDING_BASE_URL: "",
+      EMBEDDING_MODEL: "",
+      ...envOverrides,
+    },
     stdout: "piped",
     stderr: "piped",
   });
