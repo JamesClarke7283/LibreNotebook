@@ -4,12 +4,24 @@ import { getLogger } from "./lib/logger.ts";
 import { loadEnv, multiUserEnabled } from "./lib/env-config.ts";
 import { getSessionUserId } from "./lib/auth.ts";
 import { withUser } from "./lib/request-context.ts";
+import { recoverStuckJobs } from "./lib/recovery.ts";
 
 const log = getLogger("http");
 
 // Load .env into Deno.env before any other module has a chance to read
 // settings. Top-level await is fine in Deno modules.
 await loadEnv();
+
+// Recover jobs orphaned by the previous server lifetime (notebooks
+// stuck in "generating" status, infographic studio items mid-flight,
+// etc.). Best-effort — if it fails we still let the server boot.
+try {
+  await recoverStuckJobs();
+} catch (err) {
+  log.warn("startup recovery failed", {
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
 
 // Routes the auth middleware lets through anonymously. Everything else
 // 401s (for /api/*) or redirects to /signin (for pages).
@@ -18,8 +30,8 @@ const ANON_PATHS = [
   "/signup",
   "/forgot-password",
   "/reset-password",
-  "/api/auth/",     // Better Auth handler
-  "/favicon",       // png + svg
+  "/api/auth/", // Better Auth handler
+  "/favicon", // png + svg
   "/icon.svg",
 ];
 function isAnonPath(pathname: string): boolean {

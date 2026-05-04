@@ -133,12 +133,15 @@ export async function generateSummaryAndQuestions(
     timeoutMs: 180_000,
   });
   const invokeStart = Date.now();
+  // 10-second heartbeat — slow enough to not flood the log, fast
+  // enough that a user watching the terminal sees something within
+  // a few seconds of clicking, instead of "is anything happening?".
   const tick = setInterval(() => {
     log.info("summary llm invoke heartbeat", {
       notebookId,
       elapsedSec: Math.floor((Date.now() - invokeStart) / 1000),
     });
-  }, 30_000);
+  }, 10_000);
   let reply;
   try {
     reply = await model.invoke(

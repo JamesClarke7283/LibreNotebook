@@ -49,6 +49,10 @@ export interface Notebook {
   /** Up to 3 short questions a user might ask. */
   suggestedQuestions?: string[];
   summaryGeneratedAt?: string;
+  /** ISO timestamp the most recent generation flipped to "generating".
+   *  Used by the route handlers to detect orphaned jobs after a server
+   *  restart and auto-rekick them. */
+  summaryStartedAt?: string;
   summaryStatus?: SummaryStatus;
   summaryError?: string;
 }

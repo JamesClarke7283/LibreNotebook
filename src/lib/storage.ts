@@ -145,6 +145,7 @@ export async function updateNotebook(
       | "summary"
       | "suggestedQuestions"
       | "summaryGeneratedAt"
+      | "summaryStartedAt"
       | "summaryStatus"
       | "summaryError"
     >

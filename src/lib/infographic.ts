@@ -107,9 +107,12 @@ function asString(content: unknown): string {
  *  that an unreachable / hung LLM surfaces as a "failed" studio item
  *  in the UI instead of a perpetual spinner. */
 const INVOKE_TIMEOUT_MS = 180_000;
-const HEARTBEAT_MS = 30_000;
+// 10-second heartbeat — fast enough that a user watching the
+// terminal sees activity within a few seconds, slow enough to keep
+// the log file readable.
+const HEARTBEAT_MS = 10_000;
 
-/** Wrap a model.invoke() call with progress logs + a 30-second
+/** Wrap a model.invoke() call with progress logs + a 10-second
  *  heartbeat tick so users can see in the log that the call is alive
  *  and waiting on the LLM, not silently idle. The caller still owns
  *  the abort timeout via the signal we pass through to invoke. */

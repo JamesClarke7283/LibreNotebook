@@ -24,9 +24,10 @@ const MIN_ITERATIONS = 3;
 
 export const handler = define.handlers({
   async POST(ctx) {
+    const notebookId = ctx.params.id;
+    log.info("infographic refine POST received", { notebookId });
     const settings = await getSettings();
     if (!settings) return new Response("No settings", { status: 412 });
-    const notebookId = ctx.params.id;
 
     const ct = ctx.req.headers.get("content-type") ?? "";
     let jobId = "";

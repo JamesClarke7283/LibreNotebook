@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/neutralinojs/neutralinojs/main/schemas/neutralino.config.schema.json",
   "applicationId": "js.librenotebook.app",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "applicationName": "LibreNotebook",
   "defaultMode": "window",
   "port": 0,

@@ -20,6 +20,9 @@ import {
   type InfographicParams,
 } from "../../../../../../lib/infographic.ts";
 import { createJob } from "../../../../../../lib/jobs.ts";
+import { getLogger } from "../../../../../../lib/logger.ts";
+
+const log = getLogger("infographic-start");
 
 function parseParams(x: unknown): InfographicParams | null {
   if (!x || typeof x !== "object") return null;
@@ -45,9 +48,10 @@ function parseParams(x: unknown): InfographicParams | null {
 
 export const handler = define.handlers({
   async POST(ctx) {
+    const notebookId = ctx.params.id;
+    log.info("infographic start POST received", { notebookId });
     const settings = await getSettings();
     if (!settings) return new Response("No settings", { status: 412 });
-    const notebookId = ctx.params.id;
     const nb = await getNotebook(notebookId);
     if (!nb) return new Response("Notebook not found", { status: 404 });
 
