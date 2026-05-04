@@ -66,6 +66,7 @@
     "npm:puppeteer-core@23": "23.11.1",
     "npm:puppeteer@23": "23.11.1",
     "npm:rollup@^4.55.1": "4.60.2",
+    "npm:source-map-js@^1.2.1": "1.2.1",
     "npm:tailwindcss@^4.1.10": "4.2.4",
     "npm:vite@^7.1.3": "7.3.2",
     "npm:vite@^7.1.4": "7.3.2"
@@ -3470,6 +3471,7 @@
       "npm:preact@^10.29.1",
       "npm:puppeteer-core@23",
       "npm:puppeteer@23",
+      "npm:source-map-js@^1.2.1",
       "npm:tailwindcss@^4.1.10",
       "npm:vite@^7.1.3"
     ]
