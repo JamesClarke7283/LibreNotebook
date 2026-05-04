@@ -17,6 +17,8 @@ export default defineConfig({
       "@langchain/ollama",
       "@langchain/classic",
       "@langchain/textsplitters",
+      "pdfjs-dist",
+      "pngjs",
     ],
   },
   plugins: [

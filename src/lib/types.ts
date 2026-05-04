@@ -13,8 +13,23 @@ export interface ProviderConfig {
   model: string;
 }
 
+/** LLM provider config — adds vision flag and Ollama context-window control. */
+export interface LlmProviderConfig extends ProviderConfig {
+  /**
+   * Whether this model can read images. For OpenAI this is a manual user
+   * toggle; for Ollama this is auto-detected from `/api/show`'s
+   * `capabilities` array.
+   */
+  hasVision: boolean;
+  /**
+   * Ollama-only. "auto" = ask Ollama for the model's max context length and
+   * use it. A number = use that many tokens. `undefined` for OpenAI.
+   */
+  numCtx?: "auto" | number;
+}
+
 export interface AppSettings {
-  llm: ProviderConfig;
+  llm: LlmProviderConfig;
   embedding: ProviderConfig;
   /** ISO timestamp when the user completed onboarding. */
   configuredAt: string;
@@ -28,7 +43,25 @@ export interface Notebook {
   sourceCount: number;
 }
 
-export type SourceKind = "text" | "url" | "file";
+export type SourceKind = "text" | "url" | "pdf";
+
+export interface SourceImage {
+  /** Filename within the source's images folder, e.g. "page-3-img-1.png". */
+  filename: string;
+  /** 1-based page number. */
+  page: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Lifecycle of a source as it moves through ingestion:
+ *   pending  → just created, not yet embedded into the vector store
+ *   ready    → embedded, available for retrieval
+ *   failed   → embedding failed (e.g. embedding server unreachable);
+ *              `error` holds the message, the source is still browsable
+ */
+export type SourceStatus = "pending" | "ready" | "failed";
 
 export interface NotebookSource {
   id: string;
@@ -37,6 +70,13 @@ export interface NotebookSource {
   kind: SourceKind;
   /** Plain-text content extracted from the source (already chunkable). */
   content: string;
+  /** Extracted images (PDFs only, currently). */
+  images?: SourceImage[];
+  /** Number of pages (PDFs only). */
+  pageCount?: number;
+  status: SourceStatus;
+  /** Populated when `status === "failed"`. */
+  error?: string;
   createdAt: string;
 }
 

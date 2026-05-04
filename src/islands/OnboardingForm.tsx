@@ -1,21 +1,23 @@
 // Provider-configuration form. One block for the LLM, one for embeddings.
-// Each block lets the user pick OpenAI-compatible or Ollama, fill in the
-// base URL / API key, click "Test connection" to probe the server and
-// populate a searchable model combobox, and the form POSTs to
-// /api/settings.
+//
+// LLM blocks pick up two extra controls beyond the embedding block:
+//   - Vision: manual checkbox for OpenAI-compatible servers, auto-detected
+//     read-only badge for Ollama (queried via /api/probe-model).
+//   - Context window: Ollama-only. "Auto" = use the model's full context
+//     length (Ollama default 2048 is usually too small for RAG); a custom
+//     numeric override is also available.
 
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-import type { AppSettings, ProviderConfig, ProviderKind } from "../lib/types.ts";
+import type {
+  AppSettings,
+  LlmProviderConfig,
+  ProviderConfig,
+  ProviderKind,
+} from "../lib/types.ts";
 import { ModelCombobox } from "./ModelCombobox.tsx";
 import { CheckIcon } from "../components/Icons.tsx";
 
-/**
- * Where to return when the user clicks Save (or Cancel). We capture the
- * referrer at mount so we can drop the user back where they came from
- * — typically /notebooks or /notebooks/:id. Falls back to /notebooks for
- * first-run / direct-link visits.
- */
 function resolveReturnUrl(): string {
   const ref = (globalThis as unknown as { document?: Document }).document
     ?.referrer ?? "";
@@ -23,7 +25,6 @@ function resolveReturnUrl(): string {
   try {
     const u = new URL(ref);
     if (u.origin !== globalThis.location.origin) return "/notebooks";
-    // Don't loop back into the settings page itself.
     if (u.pathname === "/onboarding" || u.pathname === "/settings") {
       return "/notebooks";
     }
@@ -58,12 +59,22 @@ interface BlockState {
   models: string[];
   testing: boolean;
   testResult: { ok: boolean; message: string } | null;
+  // LLM-only:
+  hasVision: boolean;
+  visionAuto: boolean;       // true once Ollama auto-detect has run
+  visionDetected: boolean | null;  // result of the last auto-detect
+  numCtxMode: "auto" | "custom";
+  numCtxCustom: string;      // string so the user can type freely
+  contextLengthDetected: number | null;
+  probing: boolean;
 }
 
 function makeBlockState(
-  cfg: ProviderConfig | undefined,
+  cfg: LlmProviderConfig | ProviderConfig | undefined,
   modelDefault: string,
+  isLlm: boolean,
 ): BlockState {
+  const llmCfg = cfg as LlmProviderConfig | undefined;
   return {
     provider: cfg?.provider ?? "openai",
     baseUrl: cfg?.baseUrl ?? DEFAULTS[cfg?.provider ?? "openai"].baseUrl,
@@ -72,21 +83,31 @@ function makeBlockState(
     models: [],
     testing: false,
     testResult: null,
+    hasVision: isLlm ? llmCfg?.hasVision ?? false : false,
+    visionAuto: false,
+    visionDetected: null,
+    numCtxMode: isLlm
+      ? typeof llmCfg?.numCtx === "number" ? "custom" : "auto"
+      : "auto",
+    numCtxCustom: isLlm && typeof llmCfg?.numCtx === "number"
+      ? String(llmCfg.numCtx)
+      : "",
+    contextLengthDetected: null,
+    probing: false,
   };
 }
 
 export function OnboardingForm({ initial }: Props) {
   const llm = useSignal<BlockState>(
-    makeBlockState(initial?.llm, DEFAULTS.openai.llmModel),
+    makeBlockState(initial?.llm, DEFAULTS.openai.llmModel, true),
   );
   const emb = useSignal<BlockState>(
-    makeBlockState(initial?.embedding, DEFAULTS.openai.embeddingModel),
+    makeBlockState(initial?.embedding, DEFAULTS.openai.embeddingModel, false),
   );
 
   const submitting = useSignal(false);
   const submitError = useSignal<string | null>(null);
 
-  // Captured once at mount; stable across re-renders.
   const returnUrlRef = useRef("/notebooks");
   useEffect(() => {
     returnUrlRef.current = resolveReturnUrl();
@@ -107,6 +128,8 @@ export function OnboardingForm({ initial }: Props) {
       model: d[modelKind],
       models: [],
       testResult: null,
+      visionDetected: null,
+      contextLengthDetected: null,
     };
   }
 
@@ -133,8 +156,9 @@ export function OnboardingForm({ initial }: Props) {
           models: data.models,
           testResult: {
             ok: true,
-            message:
-              `Connected — ${data.models.length} model${data.models.length === 1 ? "" : "s"} available`,
+            message: `Connected — ${data.models.length} model${
+              data.models.length === 1 ? "" : "s"
+            } available`,
           },
         };
       } else {
@@ -156,23 +180,86 @@ export function OnboardingForm({ initial }: Props) {
     }
   }
 
+  /** Probe the chosen model for vision capability + context length. LLM only. */
+  async function probeModel(sig: typeof llm) {
+    const s = sig.value;
+    if (!s.model.trim()) return;
+    sig.value = { ...s, probing: true };
+    try {
+      const res = await fetch("/api/probe-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: s.provider,
+          baseUrl: s.baseUrl.trim(),
+          apiKey: s.apiKey.trim() || undefined,
+          model: s.model.trim(),
+        }),
+      });
+      const data = await res.json() as
+        | {
+          ok: true;
+          visionAuto: boolean;
+          hasVision: boolean | null;
+          contextLength: number | null;
+        }
+        | { ok: false; error: string };
+      if (!data.ok) {
+        sig.value = { ...sig.value, probing: false };
+        return;
+      }
+      sig.value = {
+        ...sig.value,
+        probing: false,
+        visionAuto: data.visionAuto,
+        visionDetected: data.hasVision,
+        // Auto-apply detected vision flag for Ollama only.
+        hasVision: data.visionAuto && data.hasVision !== null
+          ? data.hasVision
+          : sig.value.hasVision,
+        contextLengthDetected: data.contextLength,
+      };
+    } catch {
+      sig.value = { ...sig.value, probing: false };
+    }
+  }
+
+  // Re-probe whenever the LLM model changes (debounced).
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void probeModel(llm);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [llm.value.model, llm.value.provider, llm.value.baseUrl]);
+
   async function onSubmit(e: Event) {
     e.preventDefault();
     submitError.value = null;
     submitting.value = true;
-    const payload: { llm: ProviderConfig; embedding: ProviderConfig } = {
+    let numCtx: "auto" | number | undefined = undefined;
+    if (llm.value.provider === "ollama") {
+      if (llm.value.numCtxMode === "auto") numCtx = "auto";
+      else {
+        const n = parseInt(llm.value.numCtxCustom, 10);
+        if (Number.isFinite(n) && n > 0) numCtx = n;
+        else numCtx = "auto";
+      }
+    }
+    const payload = {
       llm: {
         provider: llm.value.provider,
         baseUrl: llm.value.baseUrl.trim(),
         apiKey: llm.value.apiKey.trim() || undefined,
         model: llm.value.model.trim(),
-      },
+        hasVision: llm.value.hasVision,
+        numCtx,
+      } as LlmProviderConfig,
       embedding: {
         provider: emb.value.provider,
         baseUrl: emb.value.baseUrl.trim(),
         apiKey: emb.value.apiKey.trim() || undefined,
         model: emb.value.model.trim(),
-      },
+      } as ProviderConfig,
     };
     try {
       const res = await fetch("/api/settings", {
@@ -200,21 +287,30 @@ export function OnboardingForm({ initial }: Props) {
       <ProviderBlock
         title="Chat / LLM model"
         description="Used for chat answers and studio generations."
+        isLlm={true}
         state={llm.value}
         onProvider={(p) => applyDefault(llm, p, "llmModel")}
         onBaseUrl={(v) => (llm.value = { ...llm.value, baseUrl: v })}
         onApiKey={(v) => (llm.value = { ...llm.value, apiKey: v })}
         onModel={(v) => (llm.value = { ...llm.value, model: v })}
+        onHasVision={(v) => (llm.value = { ...llm.value, hasVision: v })}
+        onNumCtxMode={(m) => (llm.value = { ...llm.value, numCtxMode: m })}
+        onNumCtxCustom={(v) =>
+          (llm.value = { ...llm.value, numCtxCustom: v })}
         onTest={() => testConnection(llm)}
       />
       <ProviderBlock
         title="Embedding model"
         description="Used to index your notebook sources for retrieval."
+        isLlm={false}
         state={emb.value}
         onProvider={(p) => applyDefault(emb, p, "embeddingModel")}
         onBaseUrl={(v) => (emb.value = { ...emb.value, baseUrl: v })}
         onApiKey={(v) => (emb.value = { ...emb.value, apiKey: v })}
         onModel={(v) => (emb.value = { ...emb.value, model: v })}
+        onHasVision={() => {}}
+        onNumCtxMode={() => {}}
+        onNumCtxCustom={() => {}}
         onTest={() => testConnection(emb)}
       />
 
@@ -258,16 +354,20 @@ export function OnboardingForm({ initial }: Props) {
 interface BlockProps {
   title: string;
   description: string;
+  isLlm: boolean;
   state: BlockState;
   onProvider: (p: ProviderKind) => void;
   onBaseUrl: (v: string) => void;
   onApiKey: (v: string) => void;
   onModel: (v: string) => void;
+  onHasVision: (v: boolean) => void;
+  onNumCtxMode: (m: "auto" | "custom") => void;
+  onNumCtxCustom: (v: string) => void;
   onTest: () => void;
 }
 
 function ProviderBlock(props: BlockProps) {
-  const { state } = props;
+  const { state, isLlm } = props;
   const isOllama = state.provider === "ollama";
   return (
     <fieldset class="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
@@ -354,6 +454,109 @@ function ProviderBlock(props: BlockProps) {
           </p>
         )}
       </div>
+
+      {isLlm && (
+        <>
+          {/* Vision capability */}
+          <div class="rounded-lg bg-zinc-950/60 border border-zinc-800 px-4 py-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <p class="text-sm text-zinc-100 font-medium">
+                  Vision capability
+                </p>
+                <p class="text-xs text-zinc-400 mt-0.5">
+                  {isOllama
+                    ? "Auto-detected from the Ollama API."
+                    : "Tell us if this model can read images (PDF pages, screenshots)."}
+                </p>
+              </div>
+              {isOllama
+                ? (
+                  <span
+                    class={`text-xs px-2 py-1 rounded-full border ${
+                      state.probing
+                        ? "border-zinc-700 text-zinc-400"
+                        : state.visionDetected === true
+                        ? "border-emerald-700 text-emerald-300 bg-emerald-950/50"
+                        : state.visionDetected === false
+                        ? "border-zinc-700 text-zinc-400"
+                        : "border-zinc-800 text-zinc-500"
+                    }`}
+                  >
+                    {state.probing
+                      ? "Probing…"
+                      : state.visionDetected === true
+                      ? "Vision: ✓ supported"
+                      : state.visionDetected === false
+                      ? "Vision: not supported"
+                      : "Vision: unknown"}
+                  </span>
+                )
+                : (
+                  <label class="inline-flex items-center gap-2 text-sm text-zinc-200">
+                    <input
+                      type="checkbox"
+                      checked={state.hasVision}
+                      onChange={(e) =>
+                        props.onHasVision(
+                          (e.currentTarget as HTMLInputElement).checked,
+                        )}
+                      class="w-4 h-4 accent-zinc-100"
+                    />
+                    Has vision
+                  </label>
+                )}
+            </div>
+          </div>
+
+          {/* Context window — Ollama only */}
+          {isOllama && (
+            <div class="rounded-lg bg-zinc-950/60 border border-zinc-800 px-4 py-3">
+              <div class="flex items-center justify-between gap-3 mb-2">
+                <div>
+                  <p class="text-sm text-zinc-100 font-medium">
+                    Context window
+                  </p>
+                  <p class="text-xs text-zinc-400 mt-0.5">
+                    Auto uses the model's maximum context.
+                    {state.contextLengthDetected
+                      ? ` Detected: ${state.contextLengthDetected.toLocaleString()} tokens.`
+                      : ""}
+                  </p>
+                </div>
+                <div class="inline-flex rounded-full bg-zinc-800 p-1 text-xs">
+                  <ContextModeTab
+                    label="Auto"
+                    active={state.numCtxMode === "auto"}
+                    onClick={() => props.onNumCtxMode("auto")}
+                  />
+                  <ContextModeTab
+                    label="Custom"
+                    active={state.numCtxMode === "custom"}
+                    onClick={() => props.onNumCtxMode("custom")}
+                  />
+                </div>
+              </div>
+              {state.numCtxMode === "custom" && (
+                <input
+                  type="number"
+                  min="512"
+                  step="512"
+                  value={state.numCtxCustom}
+                  placeholder={state.contextLengthDetected
+                    ? String(state.contextLengthDetected)
+                    : "8192"}
+                  onInput={(e) =>
+                    props.onNumCtxCustom(
+                      (e.currentTarget as HTMLInputElement).value,
+                    )}
+                  class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+              )}
+            </div>
+          )}
+        </>
+      )}
     </fieldset>
   );
 }
@@ -370,6 +573,26 @@ function ProviderTab(
       type="button"
       onClick={onClick}
       class={`px-3 py-1 rounded-full transition ${
+        active ? "bg-zinc-100 text-zinc-900" : "text-zinc-300 hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ContextModeTab(
+  { label, active, onClick }: {
+    label: string;
+    active: boolean;
+    onClick: () => void;
+  },
+) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      class={`px-2.5 py-0.5 rounded-full transition ${
         active ? "bg-zinc-100 text-zinc-900" : "text-zinc-300 hover:text-white"
       }`}
     >

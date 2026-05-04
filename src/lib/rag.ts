@@ -25,7 +25,7 @@ export async function streamRagAnswer(
   history: ChatMessage[],
   question: string,
 ): Promise<ReadableStream<Uint8Array>> {
-  const llm = buildChatModel(settings.llm);
+  const llm = await buildChatModel(settings.llm);
   const embeddings = buildEmbeddings(settings.embedding);
 
   // Retrieval (skipped gracefully when the notebook has no sources yet).

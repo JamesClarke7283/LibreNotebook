@@ -2,7 +2,11 @@
 // configurations.
 
 import { define } from "../../utils.ts";
-import type { AppSettings, ProviderConfig } from "../../lib/types.ts";
+import type {
+  AppSettings,
+  LlmProviderConfig,
+  ProviderConfig,
+} from "../../lib/types.ts";
 import { getSettings, saveSettings } from "../../lib/storage.ts";
 
 function isProviderConfig(x: unknown): x is ProviderConfig {
@@ -14,6 +18,17 @@ function isProviderConfig(x: unknown): x is ProviderConfig {
     typeof o.model === "string" && o.model.length > 0 &&
     (o.apiKey === undefined || typeof o.apiKey === "string")
   );
+}
+
+function isLlmProviderConfig(x: unknown): x is LlmProviderConfig {
+  if (!isProviderConfig(x)) return false;
+  const o = x as unknown as Record<string, unknown>;
+  if (typeof o.hasVision !== "boolean") return false;
+  if (
+    o.numCtx !== undefined && o.numCtx !== "auto" &&
+    !(typeof o.numCtx === "number" && Number.isFinite(o.numCtx) && o.numCtx > 0)
+  ) return false;
+  return true;
 }
 
 export const handler = define.handlers({
@@ -34,7 +49,7 @@ export const handler = define.handlers({
       return new Response("Expected { llm, embedding }", { status: 400 });
     }
     const { llm, embedding } = body as Record<string, unknown>;
-    if (!isProviderConfig(llm) || !isProviderConfig(embedding)) {
+    if (!isLlmProviderConfig(llm) || !isProviderConfig(embedding)) {
       return new Response("Invalid provider config", { status: 400 });
     }
     const settings: AppSettings = {

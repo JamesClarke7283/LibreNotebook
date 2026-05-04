@@ -147,6 +147,15 @@ export async function listSources(
   return out;
 }
 
+export function getSource(
+  notebookId: string,
+  sourceId: string,
+): Promise<NotebookSource | null> {
+  return readJsonOrNull<NotebookSource>(
+    join(sourcesDir(notebookId), `${sourceId}.json`),
+  );
+}
+
 export async function addSource(
   source: Omit<NotebookSource, "id" | "createdAt">,
 ): Promise<NotebookSource> {
@@ -165,21 +174,52 @@ export async function addSource(
   return created;
 }
 
+/**
+ * Patch a source in place (status transitions, error messages, etc).
+ * Returns the updated record or null if the source no longer exists.
+ */
+export async function updateSource(
+  notebookId: string,
+  sourceId: string,
+  patch: Partial<NotebookSource>,
+): Promise<NotebookSource | null> {
+  const existing = await getSource(notebookId, sourceId);
+  if (!existing) return null;
+  const merged = { ...existing, ...patch, id: existing.id };
+  await writeJson(join(sourcesDir(notebookId), `${sourceId}.json`), merged);
+  return merged;
+}
+
 export async function deleteSource(
   notebookId: string,
   sourceId: string,
 ): Promise<void> {
+  // Drop the source record.
   try {
     await rm(join(sourcesDir(notebookId), `${sourceId}.json`));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
+  // Drop any extracted images for this source.
+  try {
+    await rm(join(notebookDir(notebookId), "images", sourceId), {
+      recursive: true,
+      force: true,
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  // Bump notebook count.
   const nb = await getNotebook(notebookId);
   if (nb) {
     await updateNotebook(nb.id, {
       sourceCount: Math.max(0, nb.sourceCount - 1),
     });
   }
+}
+
+export function imagesDir(notebookId: string, sourceId: string): string {
+  return join(notebookDir(notebookId), "images", sourceId);
 }
 
 // ---------- Messages ----------

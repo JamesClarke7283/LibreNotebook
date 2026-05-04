@@ -99,3 +99,22 @@ export async function dropStore(notebookId: string): Promise<void> {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
 }
+
+/**
+ * Drop every chunk that was indexed from a particular source. We rewrite
+ * the on-disk JSON without those vectors. (MemoryVectorStore exposes no
+ * delete API, so we operate on the serialised form directly.)
+ */
+export async function removeSource(
+  notebookId: string,
+  sourceId: string,
+): Promise<number> {
+  const saved = await loadSerialised(notebookId);
+  const kept = saved.filter((v) => {
+    const meta = v.metadata as { sourceId?: string };
+    return meta?.sourceId !== sourceId;
+  });
+  if (kept.length === saved.length) return 0;
+  await persist(notebookId, kept);
+  return saved.length - kept.length;
+}

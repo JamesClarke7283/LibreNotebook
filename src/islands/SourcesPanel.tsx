@@ -1,49 +1,128 @@
-// Left pane of the notebook detail view. Lists existing sources and lets
-// the user add new ones via paste-text or URL fetch. The "Search the web"
-// feature shown in NotebookLM is intentionally omitted.
+// Left pane of the notebook detail view. Lists existing sources with
+// per-source status (pending / ready / failed) and lets the user add new
+// ones via paste-text, fetch-URL, or PDF upload. Sources can also be
+// deleted. The "Search the web" feature shown in NotebookLM is omitted.
 
+import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import type { NotebookSource } from "../lib/types.ts";
-import { ArrowRightIcon, FileIcon, PlusIcon, SidebarIcon } from "../components/Icons.tsx";
+import {
+  ArrowRightIcon,
+  FileIcon,
+  PlusIcon,
+  SidebarIcon,
+} from "../components/Icons.tsx";
 
 interface Props {
   notebookId: string;
   initial: NotebookSource[];
 }
 
+type Mode = "text" | "url" | "pdf";
+
+const POLL_MS = 1500;
+
 export function SourcesPanel({ notebookId, initial }: Props) {
   const sources = useSignal<NotebookSource[]>(initial);
   const showAdd = useSignal(false);
-  const mode = useSignal<"text" | "url">("text");
+  const mode = useSignal<Mode>("text");
   const name = useSignal("");
   const text = useSignal("");
   const url = useSignal("");
+  const file = useSignal<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const busy = useSignal(false);
   const error = useSignal<string | null>(null);
+
+  // Poll for status while any source is "pending".
+  const pollTimer = useRef<number | undefined>(undefined);
+  function schedulePoll() {
+    if (pollTimer.current !== undefined) return;
+    pollTimer.current = setTimeout(async () => {
+      pollTimer.current = undefined;
+      try {
+        const res = await fetch(`/api/notebooks/${notebookId}/sources`);
+        if (res.ok) {
+          const fresh: NotebookSource[] = await res.json();
+          sources.value = fresh;
+        }
+      } catch {
+        // ignore — try again next tick
+      }
+      if (sources.value.some((s) => s.status === "pending")) schedulePoll();
+    }, POLL_MS) as unknown as number;
+  }
+  useEffect(() => {
+    if (sources.value.some((s) => s.status === "pending")) schedulePoll();
+    return () => {
+      if (pollTimer.current !== undefined) clearTimeout(pollTimer.current);
+    };
+  });
+
+  function reset() {
+    name.value = "";
+    text.value = "";
+    url.value = "";
+    file.value = null;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
 
   async function submit() {
     error.value = null;
     busy.value = true;
     try {
-      const body = mode.value === "text"
-        ? { kind: "text", name: name.value.trim() || "Pasted text", content: text.value }
-        : { kind: "url", url: url.value.trim() };
-      const res = await fetch(`/api/notebooks/${notebookId}/sources`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      let res: Response;
+      if (mode.value === "pdf") {
+        if (!file.value) {
+          throw new Error("Pick a PDF file first.");
+        }
+        const fd = new FormData();
+        fd.append("file", file.value);
+        res = await fetch(`/api/notebooks/${notebookId}/sources`, {
+          method: "POST",
+          body: fd,
+        });
+      } else {
+        const body = mode.value === "text"
+          ? {
+            kind: "text",
+            name: name.value.trim() || "Pasted text",
+            content: text.value,
+          }
+          : { kind: "url", url: url.value.trim() };
+        res = await fetch(`/api/notebooks/${notebookId}/sources`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
       if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
       const created: NotebookSource = await res.json();
       sources.value = [...sources.value, created];
-      name.value = "";
-      text.value = "";
-      url.value = "";
+      reset();
       showAdd.value = false;
+      schedulePoll();
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
     } finally {
       busy.value = false;
+    }
+  }
+
+  async function deleteSource(id: string) {
+    // Optimistic remove.
+    const prev = sources.value;
+    sources.value = sources.value.filter((s) => s.id !== id);
+    try {
+      const res = await fetch(
+        `/api/notebooks/${notebookId}/sources/${id}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      // Roll back on failure.
+      sources.value = prev;
+      error.value = err instanceof Error ? err.message : String(err);
     }
   }
 
@@ -79,37 +158,67 @@ export function SourcesPanel({ notebookId, initial }: Props) {
                 active={mode.value === "url"}
                 onClick={() => (mode.value = "url")}
               />
+              <ModeTab
+                label="Upload PDF"
+                active={mode.value === "pdf"}
+                onClick={() => (mode.value = "pdf")}
+              />
             </div>
 
-            {mode.value === "text"
-              ? (
-                <>
-                  <input
-                    placeholder="Source name (optional)"
-                    value={name.value}
-                    onInput={(e) =>
-                      (name.value = (e.currentTarget as HTMLInputElement).value)}
-                    class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-                  />
-                  <textarea
-                    placeholder="Paste text…"
-                    value={text.value}
-                    onInput={(e) =>
-                      (text.value = (e.currentTarget as HTMLTextAreaElement).value)}
-                    rows={6}
-                    class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-                  />
-                </>
-              )
-              : (
+            {mode.value === "text" && (
+              <>
                 <input
-                  placeholder="https://example.com/article"
-                  value={url.value}
+                  placeholder="Source name (optional)"
+                  value={name.value}
                   onInput={(e) =>
-                    (url.value = (e.currentTarget as HTMLInputElement).value)}
+                    (name.value = (e.currentTarget as HTMLInputElement).value)}
                   class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
                 />
-              )}
+                <textarea
+                  placeholder="Paste text…"
+                  value={text.value}
+                  onInput={(e) =>
+                    (text.value =
+                      (e.currentTarget as HTMLTextAreaElement).value)}
+                  rows={6}
+                  class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+              </>
+            )}
+
+            {mode.value === "url" && (
+              <input
+                placeholder="https://example.com/article"
+                value={url.value}
+                onInput={(e) =>
+                  (url.value = (e.currentTarget as HTMLInputElement).value)}
+                class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+            )}
+
+            {mode.value === "pdf" && (
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={(e) => {
+                    const f = (e.currentTarget as HTMLInputElement).files?.[0];
+                    file.value = f ?? null;
+                  }}
+                  class="block w-full text-xs text-zinc-300 file:mr-3 file:rounded-full file:border-0 file:bg-zinc-100 file:text-zinc-900 file:px-3 file:py-1.5 file:text-xs file:cursor-pointer hover:file:bg-white"
+                />
+                {file.value && (
+                  <p class="text-[11px] text-zinc-500 mt-1">
+                    {file.value.name} ·{" "}
+                    {(file.value.size / 1024).toFixed(0)} KB
+                  </p>
+                )}
+                <p class="text-[11px] text-zinc-500 mt-1">
+                  Text and embedded images will be extracted via Mozilla's PDF.js.
+                </p>
+              </div>
+            )}
 
             {error.value && (
               <div class="text-xs text-red-400">{error.value}</div>
@@ -122,7 +231,7 @@ export function SourcesPanel({ notebookId, initial }: Props) {
               class="w-full inline-flex items-center justify-center gap-2 rounded-full bg-zinc-100 text-zinc-900 hover:bg-white py-1.5 text-sm disabled:opacity-50"
             >
               {busy.value
-                ? "Indexing…"
+                ? "Uploading…"
                 : (
                   <>
                     Add source
@@ -143,30 +252,117 @@ export function SourcesPanel({ notebookId, initial }: Props) {
                 Saved sources will appear here
               </p>
               <p class="text-xs mt-2 max-w-xs">
-                Click Add sources above to add text snippets or fetch a URL.
+                Click Add sources above to add text snippets, fetch a URL, or
+                upload a PDF.
               </p>
             </div>
           )
           : (
             <ul class="space-y-2">
               {sources.value.map((s) => (
-                <li
+                <SourceItem
                   key={s.id}
-                  class="flex items-start gap-2 px-3 py-2 rounded-md bg-zinc-800/40 border border-zinc-800"
-                >
-                  <FileIcon size={16} class="text-zinc-400 mt-0.5 shrink-0" />
-                  <div class="min-w-0">
-                    <p class="text-sm text-zinc-100 truncate">{s.name}</p>
-                    <p class="text-[10px] uppercase tracking-wide text-zinc-500">
-                      {s.kind}
-                    </p>
-                  </div>
-                </li>
+                  source={s}
+                  onDelete={() => deleteSource(s.id)}
+                />
               ))}
             </ul>
           )}
       </div>
     </section>
+  );
+}
+
+function SourceItem(
+  { source, onDelete }: {
+    source: NotebookSource;
+    onDelete: () => void;
+  },
+) {
+  const confirming = useSignal(false);
+
+  function onClickDelete(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (confirming.value) {
+      onDelete();
+    } else {
+      confirming.value = true;
+      setTimeout(() => (confirming.value = false), 2_500);
+    }
+  }
+
+  return (
+    <li class="flex items-start gap-2 px-3 py-2 rounded-md bg-zinc-800/40 border border-zinc-800 group">
+      <FileIcon size={16} class="text-zinc-400 mt-0.5 shrink-0" />
+      <div class="min-w-0 flex-1">
+        <p class="text-sm text-zinc-100 truncate">{source.name}</p>
+        <div class="flex items-center gap-2 mt-0.5">
+          <span class="text-[10px] uppercase tracking-wide text-zinc-500">
+            {source.kind}
+            {source.pageCount ? ` · ${source.pageCount}p` : ""}
+            {source.images && source.images.length > 0
+              ? ` · ${source.images.length} img`
+              : ""}
+          </span>
+          <StatusBadge source={source} />
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onClickDelete}
+        title={confirming.value ? "Click again to confirm" : "Delete source"}
+        class={`p-1 rounded text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 transition ${
+          confirming.value
+            ? "text-red-400 opacity-100"
+            : "text-zinc-400 hover:text-red-400"
+        }`}
+      >
+        {confirming.value ? "Confirm" : "✕"}
+      </button>
+    </li>
+  );
+}
+
+function StatusBadge({ source }: { source: NotebookSource }) {
+  if (source.status === "pending") {
+    return (
+      <span class="inline-flex items-center gap-1 text-[10px] text-zinc-300">
+        <Spinner />
+        embedding…
+      </span>
+    );
+  }
+  if (source.status === "failed") {
+    return (
+      <span
+        class="text-[10px] text-red-400"
+        title={source.error ?? "Embedding failed"}
+      >
+        failed
+      </span>
+    );
+  }
+  return (
+    <span class="text-[10px] text-emerald-400">ready</span>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg
+      class="animate-spin"
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="3"
+      stroke-linecap="round"
+      aria-hidden="true"
+    >
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+    </svg>
   );
 }
 

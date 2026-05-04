@@ -39,7 +39,10 @@
     "@langchain/ollama": "npm:@langchain/ollama@^1.2.7",
     "@langchain/textsplitters": "npm:@langchain/textsplitters@^1.0.1",
     "@langchain/classic": "npm:@langchain/classic@^1.0.32",
-    "@langchain/classic/": "npm:/@langchain/classic@^1.0.32/"
+    "@langchain/classic/": "npm:/@langchain/classic@^1.0.32/",
+    "pdfjs-dist": "npm:pdfjs-dist@^5.7.284",
+    "pdfjs-dist/": "npm:/pdfjs-dist@^5.7.284/",
+    "pngjs": "npm:pngjs@^7.0.0"
   },
   "compilerOptions": {
     "lib": [
