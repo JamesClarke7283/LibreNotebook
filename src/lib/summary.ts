@@ -95,23 +95,68 @@ export async function generateSummaryAndQuestions(
   settings: AppSettings,
   notebookId: string,
 ): Promise<SummaryResult | null> {
+  log.info("summary buildContext start", { notebookId });
+  const ctxStart = Date.now();
   const ctx = await buildContext(notebookId);
-  if (!ctx) return null;
+  if (!ctx) {
+    log.info("summary skipped — no sources", { notebookId });
+    return null;
+  }
+  log.info("summary buildContext done", {
+    notebookId,
+    promptChars: ctx.length,
+    elapsedMs: Date.now() - ctxStart,
+  });
 
+  log.info("summary buildChatModel start", {
+    notebookId,
+    provider: settings.llm.provider,
+    model: settings.llm.model,
+    numCtx: settings.llm.numCtx,
+  });
+  const buildStart = Date.now();
   const model = await buildChatModel(settings.llm);
+  log.info("summary buildChatModel done", {
+    notebookId,
+    elapsedMs: Date.now() - buildStart,
+  });
+
   // 3-minute ceiling — generous enough for slow local Ollama models
   // on weak hardware, short enough that an unreachable / hung LLM
   // surfaces as a "failed" status in the UI instead of a perpetual
   // spinner. AbortSignal.timeout makes invoke() reject on expiry.
-  const reply = await model.invoke(
-    [
-      new SystemMessage(SYSTEM_PROMPT),
-      new HumanMessage(
-        `Sources:\n\n${ctx}\n\nWrite the overview and the 3 questions.`,
-      ),
-    ],
-    { signal: AbortSignal.timeout(180_000) },
-  );
+  // The 30-second heartbeat tick gives users visible proof that the
+  // request is alive and waiting on the LLM, not silently idle.
+  log.info("summary llm invoke start", {
+    notebookId,
+    promptChars: ctx.length,
+    timeoutMs: 180_000,
+  });
+  const invokeStart = Date.now();
+  const tick = setInterval(() => {
+    log.info("summary llm invoke heartbeat", {
+      notebookId,
+      elapsedSec: Math.floor((Date.now() - invokeStart) / 1000),
+    });
+  }, 30_000);
+  let reply;
+  try {
+    reply = await model.invoke(
+      [
+        new SystemMessage(SYSTEM_PROMPT),
+        new HumanMessage(
+          `Sources:\n\n${ctx}\n\nWrite the overview and the 3 questions.`,
+        ),
+      ],
+      { signal: AbortSignal.timeout(180_000) },
+    );
+  } finally {
+    clearInterval(tick);
+  }
+  log.info("summary llm invoke done", {
+    notebookId,
+    elapsedMs: Date.now() - invokeStart,
+  });
 
   // LangChain message content can be string or rich array; coerce.
   const text = typeof reply.content === "string"

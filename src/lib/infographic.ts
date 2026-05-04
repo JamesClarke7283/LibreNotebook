@@ -107,28 +107,88 @@ function asString(content: unknown): string {
  *  that an unreachable / hung LLM surfaces as a "failed" studio item
  *  in the UI instead of a perpetual spinner. */
 const INVOKE_TIMEOUT_MS = 180_000;
+const HEARTBEAT_MS = 30_000;
+
+/** Wrap a model.invoke() call with progress logs + a 30-second
+ *  heartbeat tick so users can see in the log that the call is alive
+ *  and waiting on the LLM, not silently idle. The caller still owns
+ *  the abort timeout via the signal we pass through to invoke. */
+async function invokeWithHeartbeat<T>(
+  label: string,
+  ctx: Record<string, unknown>,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  log.info(`${label} start`, { ...ctx, timeoutMs: INVOKE_TIMEOUT_MS });
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    log.info(`${label} heartbeat`, {
+      ...ctx,
+      elapsedSec: Math.floor((Date.now() - t0) / 1000),
+    });
+  }, HEARTBEAT_MS);
+  try {
+    const result = await fn(AbortSignal.timeout(INVOKE_TIMEOUT_MS));
+    log.info(`${label} done`, { ...ctx, elapsedMs: Date.now() - t0 });
+    return result;
+  } catch (err) {
+    log.warn(`${label} failed`, {
+      ...ctx,
+      elapsedMs: Date.now() - t0,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  } finally {
+    clearInterval(tick);
+  }
+}
 
 export async function generateInitialMermaid(
   settings: AppSettings,
   notebookId: string,
   params: InfographicParams,
 ): Promise<string> {
-  log.info("infographic iter 1 start", { notebookId, style: params.style });
+  log.info("infographic iter 1 start", {
+    notebookId,
+    style: params.style,
+    detail: params.detail,
+    orientation: params.orientation,
+  });
+  const ctxStart = Date.now();
   const ctx = await buildSourceContext(notebookId);
+  log.info("infographic source context built", {
+    notebookId,
+    promptChars: ctx.length,
+    elapsedMs: Date.now() - ctxStart,
+  });
+  const buildStart = Date.now();
+  log.info("infographic buildChatModel start", {
+    notebookId,
+    provider: settings.llm.provider,
+    model: settings.llm.model,
+  });
   const model = await buildChatModel(settings.llm);
-  const reply = await model.invoke(
-    [
-      new SystemMessage(INITIAL_SYSTEM(params)),
-      new HumanMessage(
-        `Notebook context:\n\n${ctx}\n\nProduce the diagram.`,
+  log.info("infographic buildChatModel done", {
+    notebookId,
+    elapsedMs: Date.now() - buildStart,
+  });
+  const reply = await invokeWithHeartbeat(
+    "infographic iter 1 invoke",
+    { notebookId, model: settings.llm.model, promptChars: ctx.length },
+    (signal) =>
+      model.invoke(
+        [
+          new SystemMessage(INITIAL_SYSTEM(params)),
+          new HumanMessage(
+            `Notebook context:\n\n${ctx}\n\nProduce the diagram.`,
+          ),
+        ],
+        { signal },
       ),
-    ],
-    { signal: AbortSignal.timeout(INVOKE_TIMEOUT_MS) },
   );
   const mermaid = extractMermaid(asString(reply.content));
   log.info("infographic iter 1 done", {
     notebookId,
-    chars: mermaid.length,
+    mermaidChars: mermaid.length,
   });
   return mermaid;
 }
@@ -154,40 +214,52 @@ export async function refineMermaid(
     // Multimodal message: text + image. LangChain's HumanMessage accepts
     // a content array of typed parts; both ChatOpenAI (image_url) and
     // ChatOllama (images on the message) understand this shape.
-    const reply = await model.invoke(
-      [
-        new SystemMessage(REFINE_SYSTEM_VISION),
-        new HumanMessage({
-          content: [
-            {
-              type: "text",
-              text:
-                `User's description: "${params.description || "(none)"}"\n` +
-                `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
-                `Critique against the description, then emit the improved diagram.`,
-            },
-            { type: "image_url", image_url: { url: imageDataUrl } },
+    const reply = await invokeWithHeartbeat(
+      "infographic refine (vision)",
+      { model: settings.llm.model, mermaidChars: currentMermaid.length },
+      (signal) =>
+        model.invoke(
+          [
+            new SystemMessage(REFINE_SYSTEM_VISION),
+            new HumanMessage({
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `User's description: "${
+                      params.description || "(none)"
+                    }"\n` +
+                    `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
+                    `Critique against the description, then emit the improved diagram.`,
+                },
+                { type: "image_url", image_url: { url: imageDataUrl } },
+              ],
+            }),
           ],
-        }),
-      ],
-      { signal: AbortSignal.timeout(INVOKE_TIMEOUT_MS) },
+          { signal },
+        ),
     );
     return extractMermaid(asString(reply.content));
   }
 
   // Text-only fallback.
-  const reply = await model.invoke(
-    [
-      new SystemMessage(REFINE_SYSTEM_TEXT),
-      new HumanMessage(
-        `User's description: "${params.description || "(none)"}"\n` +
-          `Design intent: ${params.style}, ${params.detail}, ${params.orientation}.\n\n` +
-          `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
-          `Critique briefly, then emit the improved diagram in a fenced ` +
-          `\`\`\`mermaid block.`,
+  const reply = await invokeWithHeartbeat(
+    "infographic refine (text)",
+    { model: settings.llm.model, mermaidChars: currentMermaid.length },
+    (signal) =>
+      model.invoke(
+        [
+          new SystemMessage(REFINE_SYSTEM_TEXT),
+          new HumanMessage(
+            `User's description: "${params.description || "(none)"}"\n` +
+              `Design intent: ${params.style}, ${params.detail}, ${params.orientation}.\n\n` +
+              `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
+              `Critique briefly, then emit the improved diagram in a fenced ` +
+              `\`\`\`mermaid block.`,
+          ),
+        ],
+        { signal },
       ),
-    ],
-    { signal: AbortSignal.timeout(INVOKE_TIMEOUT_MS) },
   );
   return extractMermaid(asString(reply.content));
 }

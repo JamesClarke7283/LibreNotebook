@@ -32,7 +32,13 @@ export async function ingestSource(
     embeddingModel: settings.embedding.model,
     embeddingContextTokens: contextTokens,
   });
+  const splitStart = Date.now();
   const chunks = await splitter.splitText(source.content);
+  log.info("ingest split done", {
+    sourceId: source.id,
+    chunks: chunks.length,
+    elapsedMs: Date.now() - splitStart,
+  });
   const docs = chunks.map((chunk, idx) =>
     new Document({
       pageContent: chunk,
@@ -46,16 +52,40 @@ export async function ingestSource(
 
   const total = docs.length;
   if (onProgress) await onProgress(0, total);
-  if (total === 0) return 0;
+  if (total === 0) {
+    log.info("ingest empty — no chunks to embed", { sourceId: source.id });
+    return 0;
+  }
 
   const embeddings = buildEmbeddings(settings.embedding);
+  const totalBatches = Math.ceil(total / BATCH);
   let done = 0;
+  let batchIdx = 0;
+  const embedStart = Date.now();
   for (let i = 0; i < docs.length; i += BATCH) {
+    batchIdx++;
     const batch = docs.slice(i, i + BATCH);
+    const batchStart = Date.now();
+    log.info("ingest embed batch start", {
+      sourceId: source.id,
+      batch: `${batchIdx}/${totalBatches}`,
+      docs: batch.length,
+    });
     await addDocuments(source.notebookId, embeddings, batch);
     done += batch.length;
+    log.info("ingest embed batch done", {
+      sourceId: source.id,
+      batch: `${batchIdx}/${totalBatches}`,
+      done: `${done}/${total}`,
+      elapsedMs: Date.now() - batchStart,
+    });
     if (onProgress) await onProgress(done, total);
   }
+  log.info("ingest done", {
+    sourceId: source.id,
+    chunks: total,
+    embedElapsedMs: Date.now() - embedStart,
+  });
   return done;
 }
 

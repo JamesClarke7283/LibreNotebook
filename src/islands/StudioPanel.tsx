@@ -9,7 +9,7 @@
 // (mounted inside ChatPanel) can react without us threading callbacks
 // through Fresh's island boundaries.
 
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import {
   AudioIcon,
@@ -53,9 +53,19 @@ const TILES: {
   { label: "Slide deck", Icon: SlideIcon, key: "slides", accent: "blue" },
   { label: "Mind Map", Icon: MindMapIcon, key: "mindmap", accent: "emerald" },
   { label: "Reports", Icon: ReportIcon, key: "reports", accent: "cyan" },
-  { label: "Flashcards", Icon: FlashcardsIcon, key: "flashcards", accent: "violet" },
+  {
+    label: "Flashcards",
+    Icon: FlashcardsIcon,
+    key: "flashcards",
+    accent: "violet",
+  },
   { label: "Quiz", Icon: QuizIcon, key: "quiz", accent: "rose" },
-  { label: "Infographic", Icon: InfographicIcon, key: "infographic", accent: "yellow" },
+  {
+    label: "Infographic",
+    Icon: InfographicIcon,
+    key: "infographic",
+    accent: "yellow",
+  },
   { label: "Data table", Icon: TableIcon, key: "datatable", accent: "teal" },
 ];
 
@@ -80,6 +90,25 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
   const note = useSignal("");
   const editing = useSignal(false);
   const items = useSignal<StudioItem[]>(initialItems);
+
+  /** Optimistic remove + DELETE; rolls back on error. Mirrors the
+   *  SourcesPanel pattern. */
+  async function deleteItem(itemId: string) {
+    const prev = items.value;
+    items.value = prev.filter((i) => i.id !== itemId);
+    try {
+      const res = await fetch(
+        `/api/notebooks/${notebookId}/studio/${itemId}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok && res.status !== 204) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch {
+      // Roll back the optimistic remove if the server refused.
+      items.value = prev;
+    }
+  }
 
   // Poll while any item is still generating.
   useEffect(() => {
@@ -153,7 +182,13 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
         {items.value.length > 0
           ? (
             <ul class="space-y-2">
-              {items.value.map((it) => <StudioItemCard key={it.id} item={it} />)}
+              {items.value.map((it) => (
+                <StudioItemCard
+                  key={it.id}
+                  item={it}
+                  onDelete={() => deleteItem(it.id)}
+                />
+              ))}
             </ul>
           )
           : editing.value
@@ -161,8 +196,10 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
             <div class="flex-1 flex flex-col items-center justify-center text-center text-zinc-400">
               <textarea
                 value={note.value}
-                onInput={(e) =>
-                  (note.value = (e.currentTarget as HTMLTextAreaElement).value)}
+                onInput={(
+                  e,
+                ) => (note.value =
+                  (e.currentTarget as HTMLTextAreaElement).value)}
                 rows={6}
                 placeholder="Note…"
                 class="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
@@ -204,12 +241,32 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
   );
 }
 
-function StudioItemCard({ item }: { item: StudioItem }) {
+function StudioItemCard(
+  { item, onDelete }: { item: StudioItem; onDelete: () => void },
+) {
   const generating = item.status === "generating";
   const failed = item.status === "failed";
   const ago = relativeTime(item.createdAt);
+  const menuOpen = useSignal(false);
+  const confirming = useSignal(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
-  function onClick() {
+  // Close the menu when the user clicks/taps outside of it. We use a
+  // capture-phase listener so we beat any inner `stopPropagation`.
+  useEffect(() => {
+    if (!menuOpen.value) return;
+    function onDocClick(e: MouseEvent) {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(e.target as Node)) {
+        menuOpen.value = false;
+        confirming.value = false;
+      }
+    }
+    document.addEventListener("mousedown", onDocClick, true);
+    return () => document.removeEventListener("mousedown", onDocClick, true);
+  }, [menuOpen.value]);
+
+  function onCardClick() {
     if (item.status !== "ready") return;
     globalThis.dispatchEvent(
       new CustomEvent("librenotebook:open-studio-item", {
@@ -218,15 +275,47 @@ function StudioItemCard({ item }: { item: StudioItem }) {
     );
   }
 
+  function onMenuClick(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    menuOpen.value = !menuOpen.value;
+    confirming.value = false;
+  }
+
+  function onDeleteClick(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (confirming.value) {
+      menuOpen.value = false;
+      confirming.value = false;
+      onDelete();
+    } else {
+      confirming.value = true;
+      setTimeout(() => (confirming.value = false), 2_500);
+    }
+  }
+
+  const cardClasses =
+    `w-full flex items-center gap-3 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-left ${
+      item.status === "ready"
+        ? "hover:border-zinc-600 hover:bg-zinc-800 cursor-pointer"
+        : generating
+        ? "opacity-95 cursor-default"
+        : "cursor-default"
+    }`;
+
   return (
-    <li>
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={!generating && !failed ? false : true /* generating cards are inert; failed clickable to retry later */}
-        class={`w-full flex items-center gap-3 rounded-lg bg-zinc-900 border border-zinc-800 ${
-          generating ? "opacity-95" : "hover:border-zinc-600 hover:bg-zinc-800"
-        } px-3 py-2 text-left`}
+    <li class="relative group">
+      <div
+        role={item.status === "ready" ? "button" : undefined}
+        tabIndex={item.status === "ready" ? 0 : -1}
+        onClick={onCardClick}
+        onKeyDown={(e) => {
+          if (item.status === "ready" && (e.key === "Enter" || e.key === " ")) {
+            onCardClick();
+          }
+        }}
+        class={cardClasses}
       >
         <span
           class={`inline-flex w-9 h-9 rounded-md items-center justify-center ${
@@ -255,10 +344,40 @@ function StudioItemCard({ item }: { item: StudioItem }) {
               } · ${ago}`}
           </span>
         </span>
-        <span class="text-zinc-500 shrink-0">
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label="More actions"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen.value}
+          class={`p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 shrink-0 ${
+            menuOpen.value ? "text-zinc-200 bg-zinc-800" : ""
+          }`}
+        >
           <MoreVerticalIcon size={14} />
-        </span>
-      </button>
+        </button>
+      </div>
+
+      {menuOpen.value && (
+        <div
+          ref={menuRef}
+          role="menu"
+          class="absolute right-2 top-12 z-20 min-w-[8rem] rounded-md border border-zinc-700 bg-zinc-900 shadow-lg py-1 text-sm"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={onDeleteClick}
+            class={`block w-full text-left px-3 py-1.5 ${
+              confirming.value
+                ? "text-red-300 bg-red-500/10"
+                : "text-zinc-200 hover:bg-zinc-800 hover:text-red-300"
+            }`}
+          >
+            {confirming.value ? "Click again to confirm" : "Delete"}
+          </button>
+        </div>
+      )}
     </li>
   );
 }

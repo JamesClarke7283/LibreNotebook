@@ -17,7 +17,9 @@ import {
 } from "../../../../../../lib/storage.ts";
 import { refineMermaid } from "../../../../../../lib/infographic.ts";
 import { readJob, writeJob } from "../../../../../../lib/jobs.ts";
+import { getLogger } from "../../../../../../lib/logger.ts";
 
+const log = getLogger("infographic-refine");
 const MIN_ITERATIONS = 3;
 
 export const handler = define.handlers({
@@ -58,6 +60,15 @@ export const handler = define.handlers({
     const last = job.history[job.history.length - 1];
     if (!last) return new Response("Empty job history", { status: 500 });
 
+    const nextIter = job.history.length + 1;
+    log.info("refine start", {
+      notebookId,
+      jobId,
+      iter: nextIter,
+      hasImage: imageDataUrl !== null,
+      currentMermaidChars: last.mermaid.length,
+    });
+    const t0 = Date.now();
     let mermaid: string;
     try {
       mermaid = await refineMermaid(
@@ -68,14 +79,28 @@ export const handler = define.handlers({
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      log.warn("refine failed", {
+        notebookId,
+        jobId,
+        iter: nextIter,
+        elapsedMs: Date.now() - t0,
+        error: msg,
+      });
       await updateStudioItem(notebookId, job.studioItemId, {
         status: "failed",
         error: msg,
       });
       return Response.json({ ok: false, error: msg }, { status: 502 });
     }
+    log.info("refine done", {
+      notebookId,
+      jobId,
+      iter: nextIter,
+      elapsedMs: Date.now() - t0,
+      mermaidChars: mermaid.length,
+    });
 
-    job.history.push({ iter: job.history.length + 1, mermaid });
+    job.history.push({ iter: nextIter, mermaid });
     await writeJob(job);
 
     await updateStudioItem(notebookId, job.studioItemId, {
