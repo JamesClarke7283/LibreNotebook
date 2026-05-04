@@ -132,14 +132,18 @@ jobs:
           brew update
           brew install librsvg || true
 
-      # ---------------- Windows deps (NSIS is preinstalled).
-      - name: Verify Windows tooling
+      # ---------------- Windows deps (Chocolatey is preinstalled on
+      #     `windows-latest`, but NSIS itself isn't — install it).
+      - name: Install NSIS (Windows)
         if: matrix.ln_os == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          ls "/c/Program Files (x86)/NSIS/makensis.exe" || \
-            ls "/c/Program Files/NSIS/makensis.exe" || \
-            (echo "NSIS not found on runner" && exit 1)
+          choco install nsis -y --no-progress
+          # makensis.exe lands at C:\Program Files (x86)\NSIS\
+          if (-not (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+            Write-Error "NSIS install reported success but makensis.exe wasn't found"
+            exit 1
+          }
 
       - name: Cache Deno deps
         uses: actions/cache@v4

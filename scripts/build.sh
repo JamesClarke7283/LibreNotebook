@@ -36,7 +36,9 @@ DIST="$ROOT/dist"
 STAGING="$DIST/staging"
 APPDIR="$DIST/AppDir"
 
-VERSION="$(grep -oP '"version"\s*:\s*"\K[^"]+' neutralino.config.json | head -1)"
+# Portable version extraction: works on GNU and BSD awk (macOS).
+# `grep -oP` would be cleaner but isn't available on BSD grep.
+VERSION="$(awk -F\" '/"version"[[:space:]]*:/ { print $4; exit }' neutralino.config.json)"
 
 # ---------------------------------------------------------------- target
 
