@@ -114,7 +114,13 @@ librenotebook window [--port N]   # boots the server, then the desktop window po
 librenotebook server [--port N]   # headless server only — open the printed URL in any browser
 ```
 
-When you install the `.deb` or run the AppImage, the **default action is windowed** — the Neutralino native binary opens a desktop window pointing at a server it just started in the background. Use `server` mode when you want to expose the API to a real browser (or another device on the LAN with `HOST=0.0.0.0`).
+When you install the `.deb` / `.rpm` / AppImage, the **default action is windowed** — the Neutralino native binary opens a desktop window pointing at a server it just started in the background. Use `server` mode when you want to expose the API to a real browser (or another device on the LAN with `HOST=0.0.0.0`).
+
+> **Window mode is always single-user** — even if your `.env` sets
+> `MULTI_USER=1`. The launcher exports `MULTI_USER=0` before starting
+> the server in window mode, so the desktop app always behaves as a
+> personal app for the logged-in OS user. Multi-user / sign-in is a
+> server-mode-only concept.
 
 Both honour:
 - `PORT` — listening port (default `5173`)
@@ -150,6 +156,12 @@ project source is migrated to the new location automatically
 Set `MULTI_USER=1` in `.env` and the server-mode build requires
 sign-in. Each user has their own notebooks, sources, and chat history —
 data is scoped to a per-user subdirectory under the data root.
+
+> **Window mode ignores `MULTI_USER`.** The desktop launcher exports
+> `MULTI_USER=0` before starting the server, so the desktop app is
+> always a single-user personal app — there's no useful "sign in" gate
+> when one OS user is the only person who can reach the running
+> binary.
 
 Auth runs on **[Better Auth](https://better-auth.com/)** with email +
 password. The handler is mounted at `/api/auth/*`. There are

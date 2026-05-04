@@ -158,14 +158,21 @@ start_server() {
 
 case "$MODE" in
   server)
+    # Server mode honours .env's MULTI_USER (defaults to single-user
+    # if unset); the operator decides.
     start_server
     echo "LibreNotebook running at http://localhost:$PORT"
     wait $SERVER_PID
     ;;
   window)
+    # Window mode is the desktop-app shape — always single-user. We
+    # export MULTI_USER=0 BEFORE starting the server so .env's
+    # MULTI_USER=1 cannot take effect (loadEnv() in the server skips
+    # vars that are already set in the parent environment).
+    export MULTI_USER=0
     if [ -z "$WINDOW" ]; then
       echo "librenotebook: windowed mode unavailable (no native binary bundled)." >&2
-      echo "Falling back to server mode." >&2
+      echo "Falling back to server mode (still single-user)." >&2
       MODE=server
       start_server
       echo "LibreNotebook running at http://localhost:$PORT"
