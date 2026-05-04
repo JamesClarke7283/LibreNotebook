@@ -4,10 +4,34 @@
 // populate a searchable model combobox, and the form POSTs to
 // /api/settings.
 
+import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import type { AppSettings, ProviderConfig, ProviderKind } from "../lib/types.ts";
 import { ModelCombobox } from "./ModelCombobox.tsx";
 import { CheckIcon } from "../components/Icons.tsx";
+
+/**
+ * Where to return when the user clicks Save (or Cancel). We capture the
+ * referrer at mount so we can drop the user back where they came from
+ * — typically /notebooks or /notebooks/:id. Falls back to /notebooks for
+ * first-run / direct-link visits.
+ */
+function resolveReturnUrl(): string {
+  const ref = (globalThis as unknown as { document?: Document }).document
+    ?.referrer ?? "";
+  if (!ref) return "/notebooks";
+  try {
+    const u = new URL(ref);
+    if (u.origin !== globalThis.location.origin) return "/notebooks";
+    // Don't loop back into the settings page itself.
+    if (u.pathname === "/onboarding" || u.pathname === "/settings") {
+      return "/notebooks";
+    }
+    return u.pathname + u.search;
+  } catch {
+    return "/notebooks";
+  }
+}
 
 interface Props {
   initial: AppSettings | null;
@@ -61,6 +85,14 @@ export function OnboardingForm({ initial }: Props) {
 
   const submitting = useSignal(false);
   const submitError = useSignal<string | null>(null);
+
+  // Captured once at mount; stable across re-renders.
+  const returnUrlRef = useRef("/notebooks");
+  useEffect(() => {
+    returnUrlRef.current = resolveReturnUrl();
+  }, []);
+
+  const isEditing = initial !== null;
 
   function applyDefault(
     sig: typeof llm,
@@ -151,12 +183,16 @@ export function OnboardingForm({ initial }: Props) {
       if (!res.ok) {
         throw new Error(await res.text() || `HTTP ${res.status}`);
       }
-      globalThis.location.href = "/notebooks";
+      globalThis.location.href = returnUrlRef.current;
     } catch (err) {
       submitError.value = err instanceof Error ? err.message : String(err);
     } finally {
       submitting.value = false;
     }
+  }
+
+  function onCancel() {
+    globalThis.location.href = returnUrlRef.current;
   }
 
   return (
@@ -188,13 +224,29 @@ export function OnboardingForm({ initial }: Props) {
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={submitting.value}
-        class="w-full py-3 rounded-full bg-zinc-100 text-zinc-900 font-medium hover:bg-white disabled:opacity-50"
-      >
-        {submitting.value ? "Saving…" : "Save and continue"}
-      </button>
+      <div class="flex items-center gap-3">
+        {isEditing && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={submitting.value}
+            class="px-5 py-3 rounded-full border border-zinc-700 text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        )}
+        <button
+          type="submit"
+          disabled={submitting.value}
+          class="flex-1 py-3 rounded-full bg-zinc-100 text-zinc-900 font-medium hover:bg-white disabled:opacity-50"
+        >
+          {submitting.value
+            ? "Saving…"
+            : isEditing
+            ? "Save"
+            : "Save and continue"}
+        </button>
+      </div>
       <p class="text-xs text-zinc-500 text-center">
         Settings are stored locally as JSON. You can change them anytime
         from the Settings page.
