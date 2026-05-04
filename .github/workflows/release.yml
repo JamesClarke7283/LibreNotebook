@@ -156,17 +156,25 @@ jobs:
             ~/Library/Caches/deno
             ~/AppData/Local/deno
             node_modules
-          key: deno-${{ matrix.target }}-${{ hashFiles('deno.lock') }}
+          key: deps-${{ matrix.target }}-${{ hashFiles('package-lock.json', 'deno.lock') }}
           restore-keys: |
-            deno-${{ matrix.target }}-
+            deps-${{ matrix.target }}-
 
-      - name: Pre-fetch deps
+      - name: Install npm deps
         shell: bash
         run: |
-          # Populate node_modules (better-sqlite3 needs its prebuilt
-          # .node copied in, hence --allow-scripts). If this fails the
-          # build script's own `deno task build` will retry.
-          deno install --allow-scripts || true
+          # `npm install` produces a standard flat node_modules that
+          # Vite's bundle-loader can resolve transitive deps from on
+          # every platform. Deno's auto-mode symlink layout is
+          # unreliable on Windows (transitive deps like
+          # `source-map-js`, `semver` resolve via the .deno/ subtree
+          # symlinks which Windows handles inconsistently). With
+          # nodeModulesDir set to "manual" in deno.json, Deno uses
+          # whatever this leaves at node_modules/.
+          # --legacy-peer-deps: better-auth's peerOptional on
+          # better-sqlite3@^12 conflicts with our pinned ^11. The
+          # peer is optional, so the conflict is benign.
+          npm install --no-audit --no-fund --legacy-peer-deps
 
       # ---------------- Builds.
       - name: Build (Linux)
