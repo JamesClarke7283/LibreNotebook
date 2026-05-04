@@ -4,7 +4,33 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   // Pin the dev port so Neutralino's hardcoded devUrl can rely on it.
-  server: { port: 5173, strictPort: true },
+  // CORS is permissive in dev so Neutralino's WebKit2GTK webview origin
+  // doesn't get blocked when fetching same-origin /api/* routes (some
+  // webkit builds compute Vite's @id/* virtual URLs as a different
+  // origin and refuse the fetch with "access control checks"). The
+  // `headers` block belt-and-braces the `cors: true` shorthand so even
+  // non-API routes (like the /@id/fresh-island::* virtual modules
+  // themselves) ship the permissive CORS headers.
+  server: {
+    port: 5173,
+    strictPort: true,
+    cors: true,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "*",
+      "Access-Control-Allow-Headers": "*",
+    },
+  },
+  // Stub Node built-ins for the client bundle. Mermaid's transitive
+  // `cytoscape-fcose` imports `node:module` for an ESM-detection trick
+  // we don't need. Pointing the import at a tiny empty shim lets the
+  // bundler succeed without affecting runtime behaviour.
+  resolve: {
+    alias: {
+      "node:module": new URL("./src/shims/node-module.ts", import.meta.url)
+        .pathname,
+    },
+  },
   ssr: {
     // langchain ships dual ESM/CJS builds. Vite's SSR module-runner picks
     // the CJS twin and trips over `module is not defined`. Force the SSR

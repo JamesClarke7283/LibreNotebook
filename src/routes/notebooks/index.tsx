@@ -5,7 +5,6 @@ import { define } from "../../utils.ts";
 import { Header } from "../../components/Header.tsx";
 import {
   CheckIcon,
-  ChevronDownIcon,
   GridIcon,
   ListIcon,
   PlusIcon,
@@ -55,13 +54,9 @@ export default define.page<typeof handler>(function Notebooks({ data }) {
               <ViewToggle icon={<GridIcon size={16} />} active={true} />
               <ViewToggle icon={<ListIcon size={16} />} active={false} />
             </div>
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-zinc-800 text-zinc-200 text-sm hover:bg-zinc-800"
-            >
-              <span>Most recent</span>
-              <ChevronDownIcon size={14} />
-            </button>
+            {/* Sort dropdown is rendered inside <NotebookGrid> below
+                so it can drive the visible card order without extra
+                plumbing across the island boundary. */}
             <a
               href="/notebooks/new"
               class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-zinc-700 text-zinc-100 hover:bg-zinc-800 text-sm"

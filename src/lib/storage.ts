@@ -5,6 +5,7 @@
 
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { getLogger } from "./logger.ts";
 import type {
   AppSettings,
   ChatMessage,
@@ -12,6 +13,8 @@ import type {
   NotebookSource,
   StudioItem,
 } from "./types.ts";
+
+const log = getLogger("storage");
 
 const DATA_DIR = join(Deno.cwd(), ".data");
 const SETTINGS_PATH = join(DATA_DIR, "settings.json");
@@ -126,6 +129,7 @@ export async function updateNotebook(
 export async function deleteNotebook(id: string): Promise<void> {
   try {
     await rm(notebookDir(id), { recursive: true, force: true });
+    log.info("notebook deleted", { id });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }

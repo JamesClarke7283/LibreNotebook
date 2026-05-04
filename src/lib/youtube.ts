@@ -8,9 +8,12 @@
 // `brew install yt-dlp`, `apt install yt-dlp`, or similar. The error
 // thrown when the binary is missing tells the user exactly that.
 
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { getLogger } from "./logger.ts";
+
+const log = getLogger("youtube");
 
 const YT_HOSTS = new Set([
   "youtube.com",
@@ -19,6 +22,58 @@ const YT_HOSTS = new Set([
   "youtu.be",
   "music.youtube.com",
 ]);
+
+/**
+ * Resolve the yt-dlp binary. We try (in order):
+ *   1. $YT_DLP_PATH (explicit override)
+ *   2. plain "yt-dlp" (whatever's on PATH at server-start time)
+ *   3. ~/.local/bin/yt-dlp     (pip install --user)
+ *   4. ~/bin/yt-dlp            (manual install)
+ *   5. /usr/local/bin/yt-dlp   (homebrew, manual)
+ * The first hit wins. Cached after first resolution.
+ */
+let cachedYtDlpPath: string | null | undefined;
+async function resolveYtDlp(): Promise<string | null> {
+  if (cachedYtDlpPath !== undefined) return cachedYtDlpPath;
+  const candidates = [
+    Deno.env.get("YT_DLP_PATH") || "",
+    "yt-dlp",
+    join(homedir(), ".local/bin/yt-dlp"),
+    join(homedir(), "bin/yt-dlp"),
+    "/usr/local/bin/yt-dlp",
+  ].filter((p) => p.length > 0);
+  for (const p of candidates) {
+    if (p === "yt-dlp") {
+      // PATH lookup — try a probe with --version.
+      try {
+        const probe = new Deno.Command("yt-dlp", {
+          args: ["--version"],
+          stdout: "null",
+          stderr: "null",
+        });
+        const res = await probe.output();
+        if (res.success) {
+          cachedYtDlpPath = "yt-dlp";
+          return cachedYtDlpPath;
+        }
+      } catch {
+        // fall through to absolute-path candidates
+      }
+      continue;
+    }
+    try {
+      const s = await stat(p);
+      if (s.isFile()) {
+        cachedYtDlpPath = p;
+        return cachedYtDlpPath;
+      }
+    } catch {
+      // not present, try next
+    }
+  }
+  cachedYtDlpPath = null;
+  return null;
+}
 
 export function isYouTubeUrl(url: string): boolean {
   try {
@@ -43,44 +98,47 @@ export interface YouTubeTranscript {
 
 /**
  * Run yt-dlp and return its stdout as a string. Throws a friendly
- * NotInstalled error if the binary isn't on PATH.
+ * NotInstalled error when no binary can be located.
  */
 async function ytDlp(args: string[]): Promise<{
   ok: boolean;
   stdout: string;
   stderr: string;
 }> {
-  let cmd: Deno.Command;
+  const bin = await resolveYtDlp();
+  if (!bin) {
+    throw new Error(
+      "yt-dlp is not installed or not on PATH. " +
+        "Install with `pip install yt-dlp`, `apt install yt-dlp`, or " +
+        "`brew install yt-dlp`. Alternatively, set $YT_DLP_PATH to the " +
+        "absolute path of an installed binary.",
+    );
+  }
+  log.debug("yt-dlp", { bin, args });
   try {
-    cmd = new Deno.Command("yt-dlp", {
+    const res = await new Deno.Command(bin, {
       args,
       stdout: "piped",
       stderr: "piped",
-    });
+    }).output();
+    const out = {
+      ok: res.success,
+      stdout: new TextDecoder().decode(res.stdout),
+      stderr: new TextDecoder().decode(res.stderr),
+    };
+    if (!out.ok) {
+      log.warn("yt-dlp non-zero exit", { args, stderr: out.stderr.slice(0, 200) });
+    }
+    return out;
   } catch (err) {
     if (err instanceof Deno.errors.NotFound) {
-      throw new Error(
-        "yt-dlp is not installed. Install it with `pip install yt-dlp` or your package manager.",
-      );
+      // The cached path raced (e.g. the user uninstalled). Bust cache
+      // for the next call.
+      cachedYtDlpPath = undefined;
+      throw new Error(`yt-dlp binary at ${bin} disappeared mid-run.`);
     }
     throw err;
   }
-  let res: Deno.CommandOutput;
-  try {
-    res = await cmd.output();
-  } catch (err) {
-    if (err instanceof Deno.errors.NotFound) {
-      throw new Error(
-        "yt-dlp is not installed. Install it with `pip install yt-dlp` or your package manager.",
-      );
-    }
-    throw err;
-  }
-  return {
-    ok: res.success,
-    stdout: new TextDecoder().decode(res.stdout),
-    stderr: new TextDecoder().decode(res.stderr),
-  };
 }
 
 /** Convert a WebVTT subtitle file into a single block of plain text. */

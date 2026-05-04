@@ -10,6 +10,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SourceImage } from "./types.ts";
+import { getLogger } from "./logger.ts";
+
+const log = getLogger("webpage");
 
 // Bring in @mozilla/readability and linkedom dynamically — both pull in
 // browser-shaped APIs that we don't want in Vite's SSR module graph at
@@ -149,11 +152,18 @@ export async function extractWebpage(
     ((articleDoc.documentElement as Element | null)?.textContent ?? "");
   const text = rawText.replace(/\s+/g, " ").trim();
 
-  return {
+  const result = {
     title: article.title?.trim() || url,
     content: text,
     byline: article.byline ?? undefined,
     excerpt: article.excerpt ?? undefined,
     images,
   };
+  log.info("Readability extracted", {
+    url,
+    title: result.title,
+    chars: text.length,
+    images: images.length,
+  });
+  return result;
 }

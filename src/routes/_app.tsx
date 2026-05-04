@@ -1,5 +1,6 @@
 import { define } from "../utils.ts";
 import { ReindexBanner } from "../islands/ReindexBanner.tsx";
+import { Footer } from "../components/Footer.tsx";
 
 export default define.page(function App({ Component }) {
   return (
@@ -11,9 +12,12 @@ export default define.page(function App({ Component }) {
         <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
         <title>LibreNotebook</title>
       </head>
-      <body class="bg-zinc-950 text-zinc-100 min-h-screen antialiased">
+      <body class="bg-zinc-950 text-zinc-100 min-h-screen antialiased flex flex-col">
         <ReindexBanner />
-        <Component />
+        <div class="flex-1">
+          <Component />
+        </div>
+        <Footer />
       </body>
     </html>
   );

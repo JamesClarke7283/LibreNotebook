@@ -8,7 +8,12 @@
     "update": "deno run -A -r jsr:@fresh/update .",
     "neu": "npx -y @neutralinojs/neu run",
     "neu:build": "npx -y @neutralinojs/neu build --release",
-    "neu:update": "npx -y @neutralinojs/neu update"
+    "neu:update": "npx -y @neutralinojs/neu update",
+    "test": "deno test --allow-all --no-check tests/",
+    "server": "deno serve -A _fresh/server.js",
+    "compile": "bash scripts/build.sh",
+    "build:deb": "bash scripts/build-deb.sh",
+    "build:appimage": "bash scripts/build-appimage.sh"
   },
   "lint": {
     "rules": {
@@ -24,6 +29,8 @@
   "imports": {
     "@/": "./src/",
     "fresh": "jsr:@fresh/core@^2.3.3",
+    "@std/log": "jsr:@std/log@^0.224.14",
+    "@std/fmt/colors": "jsr:@std/fmt@^1.0.10/colors",
     "preact": "npm:preact@^10.29.1",
     "@preact/signals": "npm:@preact/signals@^2.9.0",
     "@fresh/plugin-vite": "jsr:@fresh/plugin-vite@^1.1.2",
@@ -45,7 +52,10 @@
     "pngjs": "npm:pngjs@^7.0.0",
     "mermaid": "npm:mermaid@^11.6.0",
     "@mozilla/readability": "npm:@mozilla/readability@^0.6.0",
-    "linkedom": "npm:linkedom@^0.18.12"
+    "linkedom": "npm:linkedom@^0.18.12",
+    "puppeteer": "npm:puppeteer@^23",
+    "puppeteer/": "npm:/puppeteer@^23/",
+    "puppeteer-core": "npm:puppeteer-core@^23"
   },
   "compilerOptions": {
     "lib": [

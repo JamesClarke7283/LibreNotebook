@@ -4,6 +4,11 @@
 //
 // Mounted on every page so the user sees re-embedding progress no matter
 // where they navigate after kicking it off from settings.
+//
+// The poll is *defensive*: when a request fails (e.g. the server is
+// briefly unavailable, or the WebKit webview hits a transient access
+// control message), we back off to 30 s instead of pummelling the API
+// every 2 s and spamming the JS console.
 
 import { useEffect } from "preact/hooks";
 import { useSignal } from "@preact/signals";
@@ -15,25 +20,38 @@ interface Status {
   pendingCount: number;
 }
 
+const FAST_POLL_MS = 2_000;
+const SLOW_POLL_MS = 30_000;
+
 export function ReindexBanner() {
   const status = useSignal<Status | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+
     async function tick() {
+      let nextDelay = FAST_POLL_MS;
       try {
         const res = await fetch("/api/embeddings/reindex");
-        if (res.ok && !cancelled) {
+        if (cancelled) return;
+        if (res.ok) {
           status.value = await res.json();
+        } else {
+          // Server reached but unhappy — back off so we don't hammer.
+          nextDelay = SLOW_POLL_MS;
         }
       } catch {
-        // ignore
+        // Network / CORS / fetch refused. Slow down silently.
+        nextDelay = SLOW_POLL_MS;
       }
-      if (!cancelled) {
-        timer = setTimeout(tick, 2_000) as unknown as number;
-      }
+      if (cancelled) return;
+      // Once the queue is idle, also slow down — no point checking
+      // every 2s when nothing's happening.
+      if (status.value && !status.value.active) nextDelay = SLOW_POLL_MS;
+      timer = setTimeout(tick, nextDelay) as unknown as number;
     }
+
     tick();
     return () => {
       cancelled = true;

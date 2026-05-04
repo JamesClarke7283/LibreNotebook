@@ -25,7 +25,10 @@ import { buildChatModel } from "./llm.ts";
 import { buildEmbeddings } from "./embeddings.ts";
 import { similaritySearch } from "./vectorstore.ts";
 import { getSource, imagesDir } from "./storage.ts";
+import { getLogger } from "./logger.ts";
 import type { AppSettings, ChatMessage, Citation } from "./types.ts";
+
+const log = getLogger("rag");
 
 const SYSTEM_PROMPT = `You are LibreNotebook, an open-source NotebookLM-style assistant.
 Answer the user's question using ONLY the context excerpts below. Each
@@ -129,9 +132,20 @@ export async function streamRagAnswer(
   let docs: Document[] = [];
   try {
     docs = await similaritySearch(notebookId, embeddings, question, 4);
-  } catch {
+  } catch (err) {
+    log.warn("similaritySearch failed", {
+      notebookId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     docs = [];
   }
+  log.info("RAG retrieval", {
+    notebookId,
+    k: docs.length,
+    sources: [...new Set(docs.map((d) =>
+      (d.metadata as { sourceId?: string }).sourceId
+    ))],
+  });
   const citations: Citation[] = docs.map((d, i) => ({
     index: i + 1,
     sourceId: (d.metadata as { sourceId?: string }).sourceId ?? "unknown",
@@ -149,6 +163,9 @@ export async function streamRagAnswer(
     citations,
     settings.llm.hasVision,
   );
+  if (imageParts.length > 0) {
+    log.debug("attached source images", { count: imageParts.length });
+  }
 
   // Build the message stack manually (rather than ChatPromptTemplate)
   // because we need a multimodal `content: [...]` array on the user

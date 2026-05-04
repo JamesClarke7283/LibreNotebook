@@ -6,7 +6,10 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { buildChatModel } from "./llm.ts";
 import { listSources } from "./storage.ts";
+import { getLogger } from "./logger.ts";
 import type { AppSettings } from "./types.ts";
+
+const log = getLogger("summary");
 
 const PER_SOURCE_CHARS = 2_000;
 const MAX_SOURCES = 10;
@@ -115,6 +118,11 @@ export async function generateSummaryAndQuestions(
   const { summary, questionsBlock } = splitSummaryAndQuestions(text);
   const suggestedQuestions = parseQuestions(questionsBlock || text);
 
+  log.info("summary generated", {
+    notebookId,
+    chars: summary.length,
+    questions: suggestedQuestions.length,
+  });
   return {
     summary: summary || text.trim(),
     suggestedQuestions,

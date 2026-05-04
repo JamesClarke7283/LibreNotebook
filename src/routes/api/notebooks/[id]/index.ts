@@ -3,12 +3,16 @@
 //   GET    → return the notebook record (used as a thin server probe)
 //   PATCH  → rename. Body: { title: string }. Trims, refuses empty,
 //            returns the updated record.
-//
-// (DELETE is intentionally not exposed yet — drop a notebook by deleting
-// its directory under .data/ for now.)
+//   DELETE → remove the notebook entirely (recursive directory wipe
+//            via deleteNotebook + per-notebook vector store).
 
 import { define } from "../../../../utils.ts";
-import { getNotebook, updateNotebook } from "../../../../lib/storage.ts";
+import {
+  deleteNotebook,
+  getNotebook,
+  updateNotebook,
+} from "../../../../lib/storage.ts";
+import { dropStore } from "../../../../lib/vectorstore.ts";
 
 export const handler = define.handlers({
   async GET(ctx) {
@@ -38,5 +42,19 @@ export const handler = define.handlers({
     const updated = await updateNotebook(ctx.params.id, { title: trimmed });
     if (!updated) return new Response("Not found", { status: 404 });
     return Response.json(updated);
+  },
+
+  async DELETE(ctx) {
+    const id = ctx.params.id;
+    const existing = await getNotebook(id);
+    if (!existing) return new Response("Not found", { status: 404 });
+    // Drop vectors first (best-effort), then the notebook tree.
+    try {
+      await dropStore(id);
+    } catch {
+      // best-effort
+    }
+    await deleteNotebook(id);
+    return new Response(null, { status: 204 });
   },
 });

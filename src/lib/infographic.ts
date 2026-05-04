@@ -9,7 +9,10 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { buildChatModel } from "./llm.ts";
 import { listSources } from "./storage.ts";
+import { getLogger } from "./logger.ts";
 import type { AppSettings } from "./types.ts";
+
+const log = getLogger("infographic");
 
 export interface InfographicParams {
   language: string;
@@ -104,6 +107,7 @@ export async function generateInitialMermaid(
   notebookId: string,
   params: InfographicParams,
 ): Promise<string> {
+  log.info("infographic iter 1 start", { notebookId, style: params.style });
   const ctx = await buildSourceContext(notebookId);
   const model = await buildChatModel(settings.llm);
   const reply = await model.invoke([
@@ -112,7 +116,12 @@ export async function generateInitialMermaid(
       `Notebook context:\n\n${ctx}\n\nProduce the diagram.`,
     ),
   ]);
-  return extractMermaid(asString(reply.content));
+  const mermaid = extractMermaid(asString(reply.content));
+  log.info("infographic iter 1 done", {
+    notebookId,
+    chars: mermaid.length,
+  });
+  return mermaid;
 }
 
 /**
@@ -128,6 +137,10 @@ export async function refineMermaid(
 ): Promise<string> {
   const model = await buildChatModel(settings.llm);
 
+  log.info("infographic refine", {
+    hasVision: settings.llm.hasVision,
+    hasImage: imageDataUrl !== null,
+  });
   if (imageDataUrl && settings.llm.hasVision) {
     // Multimodal message: text + image. LangChain's HumanMessage accepts
     // a content array of typed parts; both ChatOpenAI (image_url) and
