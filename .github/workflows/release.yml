@@ -1,0 +1,118 @@
+name: Release
+
+# Triggers when the version in neutralino.config.json changes on main
+# (any of major / minor / patch). The workflow:
+#   1. Reads the new version
+#   2. Skips silently if the version is unchanged from the previous commit
+#   3. Builds the .deb and the AppImage
+#   4. Publishes a GitHub Release tagged v<version> with both artefacts
+#
+# You can also trigger it manually with workflow_dispatch — useful when
+# you want to re-publish the current version's artefacts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "neutralino.config.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # need HEAD~1 to compare versions
+
+      - name: Read versions
+        id: version
+        run: |
+          NEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' neutralino.config.json | head -1)
+          OLD=""
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            OLD=$(git show HEAD~1:neutralino.config.json | grep -oP '"version"\s*:\s*"\K[^"]+' | head -1 || echo "")
+          fi
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "old=$OLD" >> "$GITHUB_OUTPUT"
+          echo "Old: $OLD  New: $NEW"
+          if [ "$NEW" = "$OLD" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip notice
+        if: steps.version.outputs.skip == 'true'
+        run: echo "Version unchanged ($(${{ steps.version.outputs.new }})), skipping release."
+
+      - name: Setup Deno
+        if: steps.version.outputs.skip == 'false'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install build dependencies
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev \
+            librsvg2-bin \
+            fuse \
+            libfuse2 \
+            file
+          # appimagetool wants FUSE 2 to *run*; the produced AppImage
+          # itself doesn't need it on user machines.
+
+      - name: Cache Deno deps
+        if: steps.version.outputs.skip == 'false'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            node_modules
+          key: deno-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-
+
+      - name: Pre-cache npm + jsr deps
+        if: steps.version.outputs.skip == 'false'
+        run: deno task dev --help >/dev/null 2>&1 || true
+
+      - name: Build .deb
+        if: steps.version.outputs.skip == 'false'
+        run: deno task build:deb
+
+      - name: Build AppImage
+        if: steps.version.outputs.skip == 'false'
+        run: deno task build:appimage
+
+      - name: List artefacts
+        if: steps.version.outputs.skip == 'false'
+        run: ls -la dist/
+
+      - name: Create release
+        if: steps.version.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.new }}
+          name: LibreNotebook v${{ steps.version.outputs.new }}
+          body: |
+            Automated release for v${{ steps.version.outputs.new }}.
+
+            **Downloads**
+            - `librenotebook_${{ steps.version.outputs.new }}_amd64.deb` — Debian / Ubuntu
+            - `LibreNotebook-${{ steps.version.outputs.new }}-x86_64.AppImage` — any modern Linux distro
+
+            See the [README](https://github.com/impulse/LibreNotebook#readme) for run modes and configuration.
+
+            License: AGPL-v3-or-later.
+          files: |
+            dist/librenotebook_${{ steps.version.outputs.new }}_amd64.deb
+            dist/LibreNotebook-${{ steps.version.outputs.new }}-x86_64.AppImage
+          fail_on_unmatched_files: true

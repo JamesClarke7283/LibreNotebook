@@ -74,15 +74,25 @@ deno task neu
 
 The first time you visit `/` you'll be sent to `/onboarding`. Configure your LLM and embedding providers, click *Test connection*, then *Save and continue*.
 
-### Optional system dependencies
-- **`yt-dlp`** — only needed to ingest YouTube transcripts. Install with one of:
+### Required dependencies (for full functionality)
+- **`yt-dlp`** — required to ingest YouTube transcripts. Install with one of:
   ```
   pip install --user yt-dlp     # ~/.local/bin/yt-dlp
-  apt install yt-dlp
-  brew install yt-dlp
+  pacman -S yt-dlp              # Arch
+  apt install yt-dlp            # Debian / Ubuntu
+  brew install yt-dlp           # macOS
   ```
   If the binary lives somewhere unusual, point `$YT_DLP_PATH` at it. The server also auto-probes `~/.local/bin`, `~/bin`, and `/usr/local/bin`.
-- **A Chromium-class browser for tests** — Puppeteer downloads its own by default. If you'd rather use a system Chrome, set `CHROME_PATH=/usr/bin/google-chrome`.
+- **`dpkg-deb`** (and `librsvg2-bin` for `rsvg-convert`) — required to build a `.deb`. Install with one of:
+  ```
+  pacman -S dpkg librsvg        # Arch
+  apt install dpkg-dev librsvg2-bin   # Debian / Ubuntu
+  brew install dpkg librsvg     # macOS
+  ```
+  Not needed at runtime — only `deno task build:deb` calls them.
+
+### Optional dependencies
+- **A Chromium-class browser for tests** — Puppeteer downloads its own by default. If you'd rather use a system Chrome, set `CHROME_PATH=/usr/bin/google-chrome` (or `/usr/bin/chromium`).
 
 ---
 
@@ -91,9 +101,12 @@ The first time you visit `/` you'll be sent to `/onboarding`. Configure your LLM
 After a release build (see *Building*), the `librenotebook` launcher accepts:
 
 ```bash
-librenotebook server [--port N]   # headless server only — open the printed URL in any browser
+librenotebook                     # ← default: window mode (desktop)
 librenotebook window [--port N]   # boots the server, then the desktop window pointing at it
+librenotebook server [--port N]   # headless server only — open the printed URL in any browser
 ```
+
+When you install the `.deb` or run the AppImage, the **default action is windowed** — the Neutralino native binary opens a desktop window pointing at a server it just started in the background. Use `server` mode when you want to expose the API to a real browser (or another device on the LAN with `HOST=0.0.0.0`).
 
 Both honour:
 - `PORT` — listening port (default `5173`)
