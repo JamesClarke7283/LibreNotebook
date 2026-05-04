@@ -36,8 +36,15 @@ async function ingestInBackground(
     return;
   }
   try {
-    await ingestSource(settings, source);
-    await updateSource(source.notebookId, source.id, { status: "ready" });
+    await ingestSource(settings, source, async (current, total) => {
+      await updateSource(source.notebookId, source.id, {
+        progress: { current, total },
+      });
+    });
+    await updateSource(source.notebookId, source.id, {
+      status: "ready",
+      // Keep last progress so the UI can show 100% on the final tick.
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await updateSource(source.notebookId, source.id, {

@@ -12,16 +12,28 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 // deno-lint-ignore no-explicit-any
 const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
 const pdfjs = pdfjsModule.default ?? pdfjsModule;
 const { PNG } = await import("pngjs");
 import type { SourceImage } from "./types.ts";
 
-// pdfjs uses workers for performance in browsers; in Node we don't need
-// (or want) one. Disable cleanly.
-if (pdfjs.GlobalWorkerOptions) {
-  pdfjs.GlobalWorkerOptions.workerSrc = "";
+// pdfjs always wants a workerSrc — even with the main-thread fallback it
+// dynamic-imports the worker module to keep the same code paths. Point
+// at the symlinked path under node_modules so it resolves at runtime.
+{
+  const workerPath = join(
+    Deno.cwd(),
+    "node_modules",
+    "pdfjs-dist",
+    "legacy",
+    "build",
+    "pdf.worker.mjs",
+  );
+  if (pdfjs.GlobalWorkerOptions) {
+    pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
+  }
 }
 
 /** Bitmap kinds emitted by pdfjs (see src/shared/util.js). */

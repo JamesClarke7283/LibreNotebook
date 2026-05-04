@@ -232,9 +232,48 @@ export function OnboardingForm({ initial }: Props) {
     return () => clearTimeout(t);
   }, [llm.value.model, llm.value.provider, llm.value.baseUrl]);
 
+  /**
+   * Embedding settings the form started with. We compare against this on
+   * submit to decide whether to warn about wiping the vector DB.
+   */
+  const originalEmb = useRef({
+    provider: initial?.embedding.provider ?? "openai",
+    baseUrl: initial?.embedding.baseUrl ?? "",
+    model: initial?.embedding.model ?? "",
+  });
+
+  function embeddingChanged(): boolean {
+    if (!isEditing) return false; // first-run: nothing to wipe
+    const o = originalEmb.current;
+    return (
+      o.provider !== emb.value.provider ||
+      o.baseUrl.trim() !== emb.value.baseUrl.trim() ||
+      o.model.trim() !== emb.value.model.trim()
+    );
+  }
+
   async function onSubmit(e: Event) {
     e.preventDefault();
     submitError.value = null;
+    if (embeddingChanged()) {
+      const ok = globalThis.confirm(
+        "Changing the embedding model invalidates the existing vector " +
+          "database. LibreNotebook will wipe it and re-embed every source " +
+          "with the new model.\n\nProceed?",
+      );
+      if (!ok) {
+        // Revert embedding settings to their original values.
+        const o = originalEmb.current;
+        emb.value = {
+          ...emb.value,
+          provider: o.provider as ProviderKind,
+          baseUrl: o.baseUrl,
+          model: o.model,
+          testResult: null,
+        };
+        return;
+      }
+    }
     submitting.value = true;
     let numCtx: "auto" | number | undefined = undefined;
     if (llm.value.provider === "ollama") {
@@ -269,6 +308,13 @@ export function OnboardingForm({ initial }: Props) {
       });
       if (!res.ok) {
         throw new Error(await res.text() || `HTTP ${res.status}`);
+      }
+      // If embedding model changed, kick off the reindex (fire-and-forget;
+      // the UI's global progress banner will pick it up).
+      if (embeddingChanged()) {
+        await fetch("/api/embeddings/reindex", { method: "POST" }).catch(
+          () => {},
+        );
       }
       globalThis.location.href = returnUrlRef.current;
     } catch (err) {

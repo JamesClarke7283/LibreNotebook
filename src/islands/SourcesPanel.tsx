@@ -326,10 +326,22 @@ function SourceItem(
 
 function StatusBadge({ source }: { source: NotebookSource }) {
   if (source.status === "pending") {
+    const p = source.progress;
+    const pct = p && p.total > 0
+      ? Math.min(100, Math.round((p.current / p.total) * 100))
+      : null;
     return (
-      <span class="inline-flex items-center gap-1 text-[10px] text-zinc-300">
+      <span class="inline-flex items-center gap-1.5 text-[10px] text-zinc-300">
         <Spinner />
-        embedding…
+        <span>embedding{pct !== null ? ` ${pct}%` : "…"}</span>
+        {pct !== null && (
+          <span class="inline-block w-12 h-1 rounded-full bg-zinc-800 overflow-hidden">
+            <span
+              class="block h-1 bg-emerald-400 transition-all"
+              style={`width: ${pct}%`}
+            />
+          </span>
+        )}
       </span>
     );
   }

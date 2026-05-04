@@ -77,6 +77,8 @@ export interface NotebookSource {
   status: SourceStatus;
   /** Populated when `status === "failed"`. */
   error?: string;
+  /** Live ingestion progress; only meaningful while status === "pending". */
+  progress?: { current: number; total: number };
   createdAt: string;
 }
 
