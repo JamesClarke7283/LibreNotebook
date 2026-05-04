@@ -99,19 +99,30 @@ export async function generateSummaryAndQuestions(
   if (!ctx) return null;
 
   const model = await buildChatModel(settings.llm);
-  const reply = await model.invoke([
-    new SystemMessage(SYSTEM_PROMPT),
-    new HumanMessage(
-      `Sources:\n\n${ctx}\n\nWrite the overview and the 3 questions.`,
-    ),
-  ]);
+  // 3-minute ceiling — generous enough for slow local Ollama models
+  // on weak hardware, short enough that an unreachable / hung LLM
+  // surfaces as a "failed" status in the UI instead of a perpetual
+  // spinner. AbortSignal.timeout makes invoke() reject on expiry.
+  const reply = await model.invoke(
+    [
+      new SystemMessage(SYSTEM_PROMPT),
+      new HumanMessage(
+        `Sources:\n\n${ctx}\n\nWrite the overview and the 3 questions.`,
+      ),
+    ],
+    { signal: AbortSignal.timeout(180_000) },
+  );
 
   // LangChain message content can be string or rich array; coerce.
   const text = typeof reply.content === "string"
     ? reply.content
     : (Array.isArray(reply.content)
       ? reply.content.map((c) =>
-        typeof c === "string" ? c : "text" in c ? (c as { text: string }).text : ""
+        typeof c === "string"
+          ? c
+          : "text" in c
+          ? (c as { text: string }).text
+          : ""
       ).join("")
       : String(reply.content));
 

@@ -17,7 +17,7 @@ const log = getLogger("infographic");
 export interface InfographicParams {
   language: string;
   orientation: "Landscape" | "Portrait" | "Square";
-  style: string;       // "Auto-select", "Sketch note", "Kawaii", …
+  style: string; // "Auto-select", "Sketch note", "Kawaii", …
   detail: "Concise" | "Standard" | "Detailed";
   description: string; // user's free-form prompt
 }
@@ -102,6 +102,12 @@ function asString(content: unknown): string {
   return String(content ?? "");
 }
 
+/** 3-minute ceiling per LLM call (initial + each refinement). Long
+ *  enough for slow local Ollama models on weak hardware, short enough
+ *  that an unreachable / hung LLM surfaces as a "failed" studio item
+ *  in the UI instead of a perpetual spinner. */
+const INVOKE_TIMEOUT_MS = 180_000;
+
 export async function generateInitialMermaid(
   settings: AppSettings,
   notebookId: string,
@@ -110,12 +116,15 @@ export async function generateInitialMermaid(
   log.info("infographic iter 1 start", { notebookId, style: params.style });
   const ctx = await buildSourceContext(notebookId);
   const model = await buildChatModel(settings.llm);
-  const reply = await model.invoke([
-    new SystemMessage(INITIAL_SYSTEM(params)),
-    new HumanMessage(
-      `Notebook context:\n\n${ctx}\n\nProduce the diagram.`,
-    ),
-  ]);
+  const reply = await model.invoke(
+    [
+      new SystemMessage(INITIAL_SYSTEM(params)),
+      new HumanMessage(
+        `Notebook context:\n\n${ctx}\n\nProduce the diagram.`,
+      ),
+    ],
+    { signal: AbortSignal.timeout(INVOKE_TIMEOUT_MS) },
+  );
   const mermaid = extractMermaid(asString(reply.content));
   log.info("infographic iter 1 done", {
     notebookId,
@@ -145,35 +154,41 @@ export async function refineMermaid(
     // Multimodal message: text + image. LangChain's HumanMessage accepts
     // a content array of typed parts; both ChatOpenAI (image_url) and
     // ChatOllama (images on the message) understand this shape.
-    const reply = await model.invoke([
-      new SystemMessage(REFINE_SYSTEM_VISION),
-      new HumanMessage({
-        content: [
-          {
-            type: "text",
-            text:
-              `User's description: "${params.description || "(none)"}"\n` +
-              `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
-              `Critique against the description, then emit the improved diagram.`,
-          },
-          { type: "image_url", image_url: { url: imageDataUrl } },
-        ],
-      }),
-    ]);
+    const reply = await model.invoke(
+      [
+        new SystemMessage(REFINE_SYSTEM_VISION),
+        new HumanMessage({
+          content: [
+            {
+              type: "text",
+              text:
+                `User's description: "${params.description || "(none)"}"\n` +
+                `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
+                `Critique against the description, then emit the improved diagram.`,
+            },
+            { type: "image_url", image_url: { url: imageDataUrl } },
+          ],
+        }),
+      ],
+      { signal: AbortSignal.timeout(INVOKE_TIMEOUT_MS) },
+    );
     return extractMermaid(asString(reply.content));
   }
 
   // Text-only fallback.
-  const reply = await model.invoke([
-    new SystemMessage(REFINE_SYSTEM_TEXT),
-    new HumanMessage(
-      `User's description: "${params.description || "(none)"}"\n` +
-        `Design intent: ${params.style}, ${params.detail}, ${params.orientation}.\n\n` +
-        `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
-        `Critique briefly, then emit the improved diagram in a fenced ` +
-        `\`\`\`mermaid block.`,
-    ),
-  ]);
+  const reply = await model.invoke(
+    [
+      new SystemMessage(REFINE_SYSTEM_TEXT),
+      new HumanMessage(
+        `User's description: "${params.description || "(none)"}"\n` +
+          `Design intent: ${params.style}, ${params.detail}, ${params.orientation}.\n\n` +
+          `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
+          `Critique briefly, then emit the improved diagram in a fenced ` +
+          `\`\`\`mermaid block.`,
+      ),
+    ],
+    { signal: AbortSignal.timeout(INVOKE_TIMEOUT_MS) },
+  );
   return extractMermaid(asString(reply.content));
 }
 
@@ -190,7 +205,9 @@ export function deriveTitle(
   const mm = mermaid.match(/mindmap\s*\n\s*\(?(\w[\w\s]+?)\)?\s*\n/);
   if (mm) return mm[1].trim();
   // First node's label, e.g. `A[Some text]` or `A(("Some text"))`.
-  const node = mermaid.match(/[A-Za-z0-9_]+[\[\(\{]+\s*"?([^"\]\)\}]+?)"?\s*[\]\)\}]+/);
+  const node = mermaid.match(
+    /[A-Za-z0-9_]+[\[\(\{]+\s*"?([^"\]\)\}]+?)"?\s*[\]\)\}]+/,
+  );
   if (node) return node[1].trim();
   if (params.description.trim()) {
     const d = params.description.trim();
