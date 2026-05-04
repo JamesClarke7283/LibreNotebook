@@ -1,20 +1,29 @@
 name: Release
 
-# Triggers when the version in neutralino.config.json changes on main
-# (any of major / minor / patch). The workflow:
-#   1. Reads the new version
-#   2. Skips silently if the version is unchanged from the previous commit
-#   3. Builds the .deb and the AppImage
-#   4. Publishes a GitHub Release tagged v<version> with both artefacts
+# Triggers (any of these):
+#   1. Tag push matching `v*` (canonical path — `git push origin v0.1.1`).
+#      Version is taken from the tag itself.
+#   2. Push to `master` / `main` that modifies `neutralino.config.json`.
+#      The workflow diffs HEAD~1's version against the new one and
+#      silently skips if unchanged. Legacy auto-trigger; tagging is
+#      preferred — see AGENTS.md.
+#   3. Manual `workflow_dispatch` — useful for re-publishing the
+#      current version's artefacts.
 #
-# You can also trigger it manually with workflow_dispatch — useful when
-# you want to re-publish the current version's artefacts.
+# Steps:
+#   1. Resolve the version (from the tag, or from neutralino.config.json)
+#   2. Build the .deb, the .rpm, and the AppImage
+#   3. Publish a GitHub Release tagged v<version> with all three artefacts.
+#      `softprops/action-gh-release@v2` reuses an existing tag if one
+#      already exists, so tag-triggered runs land on the same tag.
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "neutralino.config.json"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -32,19 +41,29 @@ jobs:
       - name: Read versions
         id: version
         run: |
-          NEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' neutralino.config.json | head -1)
-          OLD=""
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            OLD=$(git show HEAD~1:neutralino.config.json | grep -oP '"version"\s*:\s*"\K[^"]+' | head -1 || echo "")
+          # Tag pushes (refs/tags/v*) take their version from the tag.
+          # Branch pushes diff HEAD~1's neutralino.config.json against
+          # the current one and skip if unchanged.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            NEW="${GITHUB_REF#refs/tags/v}"
+            OLD=""
+            echo "Tag push: version=$NEW"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            NEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' neutralino.config.json | head -1)
+            OLD=""
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              OLD=$(git show HEAD~1:neutralino.config.json | grep -oP '"version"\s*:\s*"\K[^"]+' | head -1 || echo "")
+            fi
+            echo "Branch push: old=$OLD new=$NEW"
+            if [ "$NEW" = "$OLD" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           echo "old=$OLD" >> "$GITHUB_OUTPUT"
-          echo "Old: $OLD  New: $NEW"
-          if [ "$NEW" = "$OLD" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Skip notice
         if: steps.version.outputs.skip == 'true'
