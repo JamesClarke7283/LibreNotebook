@@ -88,10 +88,10 @@ jobs:
             runs_on: ubuntu-24.04-arm
             ln_os: linux
             ln_arch: aarch64
-          - target: macos-x86_64
-            runs_on: macos-13
-            ln_os: macos
-            ln_arch: x86_64
+          # Intel macOS (macos-13) was retired from free public-repo
+          # queues in 2026; jobs sit in `Waiting for a runner...`
+          # indefinitely. Apple Silicon-only for now. Re-add via
+          # cross-compile from macos-14 if Intel demand surfaces.
           - target: macos-aarch64
             runs_on: macos-14
             ln_os: macos
@@ -248,9 +248,9 @@ jobs:
             - `LibreNotebook-${{ needs.resolve-version.outputs.new }}-x86_64.AppImage`      — any modern Linux distro (x86_64)
             - `LibreNotebook-${{ needs.resolve-version.outputs.new }}-aarch64.AppImage`     — any modern Linux distro (arm64)
 
-            **macOS** (unsigned — first launch: right-click → Open, or `xattr -d com.apple.quarantine LibreNotebook.app`)
-            - `LibreNotebook-${{ needs.resolve-version.outputs.new }}-macos-x86_64.dmg`     — Intel Macs
-            - `LibreNotebook-${{ needs.resolve-version.outputs.new }}-macos-arm64.dmg`      — Apple Silicon
+            **macOS** (Apple Silicon only — unsigned, first launch:
+            right-click → Open, or `xattr -d com.apple.quarantine LibreNotebook.app`)
+            - `LibreNotebook-${{ needs.resolve-version.outputs.new }}-macos-arm64.dmg`      — Apple Silicon (M1/M2/M3/M4)
 
             **Windows**
             - `LibreNotebook-Setup-${{ needs.resolve-version.outputs.new }}-x86_64.exe`     — NSIS installer (per-user, no admin required)
@@ -265,7 +265,6 @@ jobs:
             artifacts/librenotebook-${{ needs.resolve-version.outputs.new }}-1.aarch64.rpm
             artifacts/LibreNotebook-${{ needs.resolve-version.outputs.new }}-x86_64.AppImage
             artifacts/LibreNotebook-${{ needs.resolve-version.outputs.new }}-aarch64.AppImage
-            artifacts/LibreNotebook-${{ needs.resolve-version.outputs.new }}-macos-x86_64.dmg
             artifacts/LibreNotebook-${{ needs.resolve-version.outputs.new }}-macos-arm64.dmg
             artifacts/LibreNotebook-Setup-${{ needs.resolve-version.outputs.new }}-x86_64.exe
           fail_on_unmatched_files: true

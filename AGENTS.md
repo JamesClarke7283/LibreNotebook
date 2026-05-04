@@ -17,8 +17,7 @@ all of them attached:
 | -------------- | ------------------------ | ------------------------------------------- |
 | Linux x86_64   | `.deb`, `.rpm`, AppImage | double-click (Software Center / GDebi)      |
 | Linux aarch64  | `.deb`, `.rpm`, AppImage | same                                        |
-| macOS x86_64   | `.dmg`                   | open .dmg → drag .app to Applications       |
-| macOS arm64    | `.dmg`                   | same                                        |
+| macOS arm64    | `.dmg`                   | open .dmg → drag .app to Applications       |
 | Windows x86_64 | NSIS `Setup-*.exe`       | run installer (per-user, no admin required) |
 
 Canonical steps:
