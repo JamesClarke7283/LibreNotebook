@@ -7,7 +7,16 @@
 
 # Fresh build directory
 _fresh/
+dist/
 # npm + other dependencies
 node_modules/
 vendor/
+
+# Neutralinojs
+bin/
+.tmp/
+.storage/
+
+# Logs
+*.log
 
