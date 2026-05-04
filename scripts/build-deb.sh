@@ -16,6 +16,11 @@ DIST="$ROOT/dist"
 APPDIR="$DIST/AppDir"
 . "$DIST/build.env"
 
+if [ "${TARGET_OS:-}" != "linux" ]; then
+  echo "build-deb.sh: TARGET_OS=${TARGET_OS:-?} — .deb is Linux-only" >&2
+  exit 64
+fi
+
 DEBROOT="$DIST/deb"
 rm -rf "$DEBROOT"
 

@@ -18,11 +18,13 @@ DIST="$ROOT/dist"
 APPDIR="$DIST/AppDir"
 . "$DIST/build.env"
 
-RPM_ARCH="${ARCH_DEB:-amd64}"
-case "$RPM_ARCH" in
-  amd64) RPM_ARCH="x86_64" ;;
-  arm64) RPM_ARCH="aarch64" ;;
-esac
+if [ "${TARGET_OS:-}" != "linux" ]; then
+  echo "build-rpm.sh: TARGET_OS=${TARGET_OS:-?} — .rpm is Linux-only" >&2
+  exit 64
+fi
+
+# RPM_ARCH comes from build.env (x86_64 / aarch64). Fall back if absent.
+RPM_ARCH="${RPM_ARCH:-x86_64}"
 
 RPM_TOP="$DIST/rpm"
 BUILDROOT="$RPM_TOP/BUILDROOT/librenotebook-${VERSION}-1.${RPM_ARCH}"
