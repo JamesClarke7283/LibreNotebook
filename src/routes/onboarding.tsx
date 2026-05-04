@@ -5,11 +5,13 @@ import { define } from "../utils.ts";
 import { Logo } from "../components/Logo.tsx";
 import { OnboardingForm } from "../islands/OnboardingForm.tsx";
 import { getSettings } from "../lib/storage.ts";
+import { envLockState } from "../lib/env-config.ts";
 
 export const handler = define.handlers({
   async GET(_ctx) {
     const existing = await getSettings();
-    return { data: { existing } };
+    const locks = envLockState();
+    return { data: { existing, locks } };
   },
 });
 
@@ -30,7 +32,7 @@ export default define.page<typeof handler>(function Onboarding({ data }) {
           Ollama. Pick one for chat and one for embeddings.
         </p>
 
-        <OnboardingForm initial={data.existing} />
+        <OnboardingForm initial={data.existing} locks={data.locks} />
       </div>
     </main>
   );

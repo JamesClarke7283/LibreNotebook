@@ -8,6 +8,7 @@ import type {
   ProviderConfig,
 } from "../../lib/types.ts";
 import { getSettings, saveSettings } from "../../lib/storage.ts";
+import { envLockState } from "../../lib/env-config.ts";
 
 function isProviderConfig(x: unknown): x is ProviderConfig {
   if (!x || typeof x !== "object") return false;
@@ -34,7 +35,10 @@ function isLlmProviderConfig(x: unknown): x is LlmProviderConfig {
 export const handler = define.handlers({
   async GET() {
     const s = await getSettings();
-    return new Response(JSON.stringify(s), {
+    const locks = envLockState();
+    // Surface the lock alongside the settings so the onboarding form
+    // can render the env-provided fields read-only.
+    return new Response(JSON.stringify({ settings: s, locks }), {
       headers: { "Content-Type": "application/json" },
     });
   },
@@ -52,13 +56,17 @@ export const handler = define.handlers({
     if (!isLlmProviderConfig(llm) || !isProviderConfig(embedding)) {
       return new Response("Invalid provider config", { status: 400 });
     }
-    const settings: AppSettings = {
-      llm,
-      embedding,
+    // If the operator has locked a provider via .env, refuse silent
+    // overwrites. The form should already disable those inputs but a
+    // direct API caller could still try.
+    const locks = envLockState();
+    const final: AppSettings = {
+      llm: locks.llm ? (await getSettings())!.llm : llm,
+      embedding: locks.embedding ? (await getSettings())!.embedding : embedding,
       configuredAt: new Date().toISOString(),
     };
-    await saveSettings(settings);
-    return new Response(JSON.stringify({ ok: true }), {
+    await saveSettings(final);
+    return new Response(JSON.stringify({ ok: true, locks }), {
       headers: { "Content-Type": "application/json" },
     });
   },

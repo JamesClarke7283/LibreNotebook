@@ -17,21 +17,24 @@ import {
   updateSource,
 } from "../../../lib/storage.ts";
 import { ingestSource } from "../../../lib/ingest.ts";
+import { dataDir } from "../../../lib/paths.ts";
 import type { AppSettings, NotebookSource } from "../../../lib/types.ts";
 
-const VECTORS_DIR = join(Deno.cwd(), ".data", "vectors");
+function vectorsDir(): string {
+  return join(dataDir(), "vectors");
+}
 
 async function wipeVectors(): Promise<void> {
   let files: string[] = [];
   try {
-    files = await readdir(VECTORS_DIR);
+    files = await readdir(vectorsDir());
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     throw err;
   }
   for (const f of files) {
     if (!f.endsWith(".json")) continue;
-    await rm(join(VECTORS_DIR, f), { force: true });
+    await rm(join(vectorsDir(), f), { force: true });
   }
 }
 

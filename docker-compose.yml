@@ -1,0 +1,39 @@
+# LibreNotebook — server-mode + multi-user via docker compose.
+#
+#   cp .env.example .env       # then fill in SMTP / providers / auth
+#   docker compose up -d
+#   open http://localhost:5173
+#
+# Persists notebooks, vectors, and the auth DB into a named volume so
+# `docker compose down` doesn't lose your data.
+
+services:
+  librenotebook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: librenotebook:latest
+    container_name: librenotebook
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    env_file:
+      - .env
+    environment:
+      # Operator overrides — anything here wins over .env. Useful for
+      # docker-only knobs like binding to all interfaces.
+      HOST: "0.0.0.0"
+      PORT: "5173"
+      LIBRENOTEBOOK_DATA_DIR: "/data"
+    volumes:
+      - librenotebook-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -qO- --tries=1 --timeout=2 http://127.0.0.1:5173/onboarding > /dev/null || exit 1"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  librenotebook-data:

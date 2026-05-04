@@ -13,8 +13,11 @@ import { join } from "node:path";
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory";
 import { Document } from "@langchain/core/documents";
 import type { Embeddings } from "@langchain/core/embeddings";
+import { dataDir } from "./paths.ts";
 
-const DATA_DIR = join(Deno.cwd(), ".data", "vectors");
+function vectorsDir(): string {
+  return join(dataDir(), "vectors");
+}
 
 interface SerialisedVector {
   content: string;
@@ -25,7 +28,7 @@ interface SerialisedVector {
 async function loadSerialised(
   notebookId: string,
 ): Promise<SerialisedVector[]> {
-  const path = join(DATA_DIR, `${notebookId}.json`);
+  const path = join(vectorsDir(), `${notebookId}.json`);
   try {
     const txt = await readFile(path, "utf8");
     return JSON.parse(txt) as SerialisedVector[];
@@ -39,8 +42,8 @@ async function persist(
   notebookId: string,
   vectors: SerialisedVector[],
 ): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  const path = join(DATA_DIR, `${notebookId}.json`);
+  await mkdir(vectorsDir(), { recursive: true });
+  const path = join(vectorsDir(), `${notebookId}.json`);
   await writeFile(path, JSON.stringify(vectors), "utf8");
 }
 
@@ -92,7 +95,7 @@ export async function similaritySearch(
 
 /** Delete a notebook's vector store on disk. */
 export async function dropStore(notebookId: string): Promise<void> {
-  const path = join(DATA_DIR, `${notebookId}.json`);
+  const path = join(vectorsDir(), `${notebookId}.json`);
   try {
     await rm(path);
   } catch (err) {

@@ -6,6 +6,8 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getLogger } from "./logger.ts";
+import { dataDir, migrateLegacyDataDir } from "./paths.ts";
+import { envEmbeddingConfig, envLlmConfig } from "./env-config.ts";
 import type {
   AppSettings,
   ChatMessage,
@@ -16,9 +18,21 @@ import type {
 
 const log = getLogger("storage");
 
-const DATA_DIR = join(Deno.cwd(), ".data");
-const SETTINGS_PATH = join(DATA_DIR, "settings.json");
-const NOTEBOOKS_DIR = join(DATA_DIR, "notebooks");
+// Trigger the one-shot legacy-dir migration the first time anything
+// touches storage. Fire-and-forget — the actual filesystem reads below
+// always go through dataDir() which is computed fresh.
+migrateLegacyDataDir().catch((err) =>
+  log.warn("legacy data migration failed", {
+    error: err instanceof Error ? err.message : String(err),
+  })
+);
+
+function settingsPath(): string {
+  return join(dataDir(), "settings.json");
+}
+function notebooksRoot(): string {
+  return join(dataDir(), "notebooks");
+}
 
 async function readJsonOrNull<T>(path: string): Promise<T | null> {
   try {
@@ -38,17 +52,38 @@ async function writeJson(path: string, data: unknown): Promise<void> {
 
 // ---------- Settings ----------
 
-export function getSettings(): Promise<AppSettings | null> {
-  return readJsonOrNull<AppSettings>(SETTINGS_PATH);
+export async function getSettings(): Promise<AppSettings | null> {
+  const stored = await readJsonOrNull<AppSettings>(settingsPath());
+  // Env presets win over (and merge with) what the user saved on disk.
+  // This way an operator who later adds an .env preset transparently
+  // takes over without nuking the user's existing notebooks / vectors.
+  const envLlm = envLlmConfig();
+  const envEmb = envEmbeddingConfig();
+  if (!envLlm && !envEmb) return stored;
+  const merged: AppSettings = {
+    llm: envLlm ?? stored?.llm ?? {
+      provider: "openai",
+      baseUrl: "",
+      model: "",
+      hasVision: false,
+    },
+    embedding: envEmb ?? stored?.embedding ?? {
+      provider: "openai",
+      baseUrl: "",
+      model: "",
+    },
+    configuredAt: stored?.configuredAt ?? new Date().toISOString(),
+  };
+  return merged;
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
-  await writeJson(SETTINGS_PATH, settings);
+  await writeJson(settingsPath(), settings);
 }
 
 export async function clearSettings(): Promise<void> {
   try {
-    await rm(SETTINGS_PATH);
+    await rm(settingsPath());
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
@@ -57,7 +92,7 @@ export async function clearSettings(): Promise<void> {
 // ---------- Notebooks ----------
 
 function notebookDir(id: string): string {
-  return join(NOTEBOOKS_DIR, id);
+  return join(notebooksRoot(), id);
 }
 function notebookFile(id: string): string {
   return join(notebookDir(id), "notebook.json");
@@ -66,7 +101,7 @@ function notebookFile(id: string): string {
 export async function listNotebooks(): Promise<Notebook[]> {
   let ids: string[] = [];
   try {
-    ids = await readdir(NOTEBOOKS_DIR);
+    ids = await readdir(notebooksRoot());
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;

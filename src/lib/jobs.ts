@@ -4,12 +4,11 @@
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { dataDir } from "./paths.ts";
 import type { InfographicParams } from "./infographic.ts";
 
-const DATA_DIR = join(Deno.cwd(), ".data");
-
 function jobsDir(notebookId: string): string {
-  return join(DATA_DIR, "notebooks", notebookId, "jobs");
+  return join(dataDir(), "notebooks", notebookId, "jobs");
 }
 
 function jobPath(notebookId: string, jobId: string): string {

@@ -36,6 +36,12 @@ function resolveReturnUrl(): string {
 
 interface Props {
   initial: AppSettings | null;
+  /**
+   * Per-provider lock from .env. When `true` the corresponding provider
+   * block renders its inputs read-only with a "Set via .env" pill, and
+   * the wipe-warning / reset flow is suppressed.
+   */
+  locks?: { llm: boolean; embedding: boolean };
 }
 
 const DEFAULTS: Record<ProviderKind, { baseUrl: string; llmModel: string; embeddingModel: string }> = {
@@ -97,7 +103,9 @@ function makeBlockState(
   };
 }
 
-export function OnboardingForm({ initial }: Props) {
+export function OnboardingForm({ initial, locks }: Props) {
+  const llmLocked = locks?.llm ?? false;
+  const embLocked = locks?.embedding ?? false;
   const llm = useSignal<BlockState>(
     makeBlockState(initial?.llm, DEFAULTS.openai.llmModel, true),
   );
@@ -380,6 +388,7 @@ export function OnboardingForm({ initial }: Props) {
         title="Chat / LLM model"
         description="Used for chat answers and studio generations."
         isLlm={true}
+        locked={llmLocked}
         state={llm.value}
         onProvider={(p) => applyDefault(llm, p, "llmModel")}
         onBaseUrl={(v) => (llm.value = { ...llm.value, baseUrl: v })}
@@ -397,6 +406,7 @@ export function OnboardingForm({ initial }: Props) {
         title="Embedding model"
         description="Used to index your notebook sources for retrieval."
         isLlm={false}
+        locked={embLocked}
         state={emb.value}
         onProvider={(p) => applyDefault(emb, p, "embeddingModel")}
         onBaseUrl={(v) => (emb.value = { ...emb.value, baseUrl: v })}
@@ -406,7 +416,7 @@ export function OnboardingForm({ initial }: Props) {
         onNumCtxMode={() => {}}
         onNumCtxCustom={() => {}}
         onTest={() => testConnection(emb)}
-        showReset={isEditing && embeddingChanged()}
+        showReset={isEditing && !embLocked && embeddingChanged()}
         onReset={resetEmbeddingToOriginal}
       />
 
@@ -485,6 +495,8 @@ interface BlockProps {
   title: string;
   description: string;
   isLlm: boolean;
+  /** Read-only when this provider has been preset via .env. */
+  locked: boolean;
   state: BlockState;
   onProvider: (p: ProviderKind) => void;
   onBaseUrl: (v: string) => void;
@@ -500,27 +512,38 @@ interface BlockProps {
 }
 
 function ProviderBlock(props: BlockProps) {
-  const { state, isLlm } = props;
+  const { state, isLlm, locked } = props;
   const isOllama = state.provider === "ollama";
+  const lockedClass = locked ? "opacity-60" : "";
   return (
-    <fieldset class="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
+    <fieldset
+      disabled={locked}
+      class={`rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4 ${lockedClass}`}
+    >
       <div class="flex items-start justify-between gap-3">
         <div>
           <legend class="text-base text-zinc-100 font-medium">
             {props.title}
           </legend>
           <p class="text-xs text-zinc-400 mt-1">{props.description}</p>
+          {locked && (
+            <p class="text-[11px] text-amber-300 mt-2 inline-flex items-center gap-1">
+              <span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />
+              Preset via <code class="font-mono">.env</code>
+              {" "}— ask the operator to change this server-side.
+            </p>
+          )}
         </div>
         <div class="inline-flex rounded-full bg-zinc-800 p-1 text-xs">
           <ProviderTab
             label="OpenAI-compatible"
             active={state.provider === "openai"}
-            onClick={() => props.onProvider("openai")}
+            onClick={() => !locked && props.onProvider("openai")}
           />
           <ProviderTab
             label="Ollama"
             active={isOllama}
-            onClick={() => props.onProvider("ollama")}
+            onClick={() => !locked && props.onProvider("ollama")}
           />
         </div>
       </div>

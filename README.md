@@ -44,6 +44,12 @@
 - **Auto-detect vision** for Ollama (probes `/api/show`'s `capabilities`); manual toggle for OpenAI
 - Ollama **Auto context window** — at request time looks up the model's `model_info.<family>.context_length` and passes it as `numCtx`; or set a custom number
 - **Re-embed** button (orange, with confirm) wipes the vector DB and re-embeds every source against the current embedding model
+- **`.env` overrides** — operators can pre-pin providers via `LLM_*` / `EMBEDDING_*` env vars; the form renders read-only when locked
+
+**Multi-user (server mode)**
+- Optional **email + password sign-in** via [Better Auth](https://better-auth.com/), enabled by `MULTI_USER=1`
+- **SMTP** for password-reset / email verification (any SMTP server — OAuth providers can be added via Better Auth plugins)
+- **Per-user data** — every notebook, source, vector, and chat lives under `<dataDir>/users/<userId>/`
 
 **Persistence**
 - Filesystem JSON under `.data/` (settings, notebooks, sources, messages, studio items, jobs)
@@ -108,9 +114,119 @@ When you install the `.deb` or run the AppImage, the **default action is windowe
 
 Both honour:
 - `PORT` — listening port (default `5173`)
+- `HOST` — bind address (default `127.0.0.1`; `0.0.0.0` for LAN / Docker)
 - `YT_DLP_PATH` — absolute path to a `yt-dlp` binary if it isn't on `PATH`
+- `LIBRENOTEBOOK_DATA_DIR` — override the user-data dir (default: per-OS platformdir)
 - `LOG_LEVEL` — one of `DEBUG`, `INFO` (default), `WARN`, `ERROR`
-- `LOG_FILE=0` — disable the `.data/librenotebook.log` file handler
+- `LOG_FILE=0` — disable the `librenotebook.log` file handler
+
+See [`.env.example`](.env.example) for every variable LibreNotebook reads.
+
+---
+
+## User-data directory
+
+LibreNotebook stores notebooks, sources, vectors, and chat history in a
+per-OS directory:
+
+| OS      | Default                                            |
+|---------|----------------------------------------------------|
+| Linux   | `$XDG_DATA_HOME/librenotebook` (or `~/.local/share/librenotebook`) |
+| macOS   | `~/Library/Application Support/librenotebook`      |
+| Windows | `%APPDATA%\librenotebook`                          |
+
+The first time a newer build runs, any legacy `./.data/` next to the
+project source is migrated to the new location automatically
+(idempotent, never overwrites). Override with `LIBRENOTEBOOK_DATA_DIR`.
+
+---
+
+## Multi-user mode (server only)
+
+Set `MULTI_USER=1` in `.env` and the server-mode build requires
+sign-in. Each user has their own notebooks, sources, and chat history —
+data is scoped to a per-user subdirectory under the data root.
+
+Auth runs on **[Better Auth](https://better-auth.com/)** with email +
+password. The handler is mounted at `/api/auth/*`. There are
+`/signin` and `/signup` pages with simple forms.
+
+Required `.env`:
+
+```env
+MULTI_USER=1
+BETTER_AUTH_SECRET=<openssl rand -hex 32>
+BETTER_AUTH_URL=http://localhost:5173
+
+# SMTP (for password-reset / email-verification messages). Optional —
+# without it, sign-up still works but password reset is disabled.
+SMTP_HOST=mail.example.com
+SMTP_PORT=587
+SMTP_USER=postmaster@example.com
+SMTP_PASS=...
+SMTP_FROM="LibreNotebook <no-reply@example.com>"
+```
+
+Window mode (the desktop binary) ignores `MULTI_USER` — it's a
+single-user desktop app.
+
+---
+
+## Operator-pinned providers (`.env`)
+
+Operators shipping a preconfigured deployment can pre-fill the LLM and
+embedding providers via `.env`. When `LLM_BASE_URL` + `LLM_MODEL` (and
+the embedding equivalents) are set, the corresponding fields render
+read-only on the onboarding form with a `Set via .env` pill — end users
+can't edit them or leak the API key.
+
+```env
+LLM_PROVIDER=openai            # "openai" or "ollama"
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
+LLM_HAS_VISION=true            # OpenAI only; Ollama auto-detects
+LLM_NUM_CTX=auto               # auto | <int> (Ollama only)
+
+EMBEDDING_PROVIDER=openai
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_MODEL=text-embedding-3-small
+```
+
+---
+
+## Docker
+
+The repo ships a `Dockerfile` (multi-stage, Deno + Vite) and a
+`docker-compose.yml` that wires up persistence, env injection, and a
+healthcheck.
+
+```bash
+cp .env.example .env
+# Edit .env — at minimum set MULTI_USER=1, BETTER_AUTH_SECRET, SMTP_*
+docker compose up -d
+# → http://localhost:5173
+```
+
+`docker compose` mounts a named volume at `/data` so notebooks, vectors,
+and the auth DB survive `down` / restarts. Add a host bind mount
+instead (`./data:/data`) if you'd rather see them on disk.
+
+To run a one-shot container directly:
+
+```bash
+docker build -t librenotebook .
+docker run --rm -p 5173:5173 \
+  -e MULTI_USER=1 \
+  -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+  -e BETTER_AUTH_URL=http://localhost:5173 \
+  -v librenotebook-data:/data \
+  librenotebook
+```
+
+The image bundles `yt-dlp` so YouTube ingest works inside the
+container without any extra setup.
 
 ---
 

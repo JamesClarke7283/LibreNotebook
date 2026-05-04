@@ -59,12 +59,28 @@ const handlers: Record<string, log.BaseHandler> = {
   }),
 };
 
+// Resolve the file path without importing paths.ts (which would
+// create a logger ↔ paths ↔ env-config cycle). This duplicates a
+// small fragment of paths.ts, but the logger has to boot before
+// anything else.
+function logFilePath(): string {
+  const override = Deno.env.get("LIBRENOTEBOOK_DATA_DIR")?.trim();
+  if (override) return `${override}/librenotebook.log`;
+  // deno-lint-ignore no-explicit-any
+  const home = (Deno.env.get("HOME") ?? "") as string;
+  const xdg = Deno.env.get("XDG_DATA_HOME");
+  if (xdg) return `${xdg}/librenotebook/librenotebook.log`;
+  return `${home}/.local/share/librenotebook/librenotebook.log`;
+}
+
 const enableFile = (Deno.env.get("LOG_FILE") ?? "1") !== "0";
 if (enableFile) {
   try {
-    Deno.mkdirSync(".data", { recursive: true });
+    const filename = logFilePath();
+    const dir = filename.substring(0, filename.lastIndexOf("/"));
+    Deno.mkdirSync(dir, { recursive: true });
     handlers.file = new log.RotatingFileHandler(LEVEL as log.LevelName, {
-      filename: ".data/librenotebook.log",
+      filename,
       maxBytes: 5_000_000,
       maxBackupCount: 3,
       formatter: (record) => {

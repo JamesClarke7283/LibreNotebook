@@ -51,6 +51,12 @@ export default defineConfig({
       // Readability + DOM parser used server-side for webpage ingest.
       "@mozilla/readability",
       "linkedom",
+      // Auth machinery — dynamic imports through Vite's SSR module
+      // runner race with HMR teardown. Externalising lets Node's
+      // resolver handle them.
+      "better-auth",
+      "better-sqlite3",
+      "nodemailer",
     ],
   },
   plugins: [
