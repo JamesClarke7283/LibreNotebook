@@ -37,37 +37,73 @@ export default defineConfig({
   // doesn't). optimizeDeps.include alone wasn't enough to win
   // against @deno/loader — these aliases force the issue.
   resolve: {
-    alias: {
-      "node:module": new URL("./src/shims/node-module.ts", import.meta.url)
-        .pathname,
+    // Use array-form aliases: object-form does PARTIAL prefix matching,
+    // which produced bogus paths like
+    //   <preact-module>/devtools
+    // when `preact/debug` itself imported `preact/devtools` and the
+    // bare-`preact` alias's replacement got prefixed onto `/devtools`.
+    // Each entry below uses `/^…$/` regex for exact match — the
+    // shorter prefixes can't bleed into longer specifiers.
+    alias: [
+      {
+        find: "node:module",
+        replacement: new URL("./src/shims/node-module.ts", import.meta.url)
+          .pathname,
+      },
       // Preact: browser-conditional .module.js builds (the same files
       // Vite would resolve via the package's "browser" exports).
-      "preact/jsx-runtime": new URL(
-        "./node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
-        import.meta.url,
-      ).pathname,
-      "preact/hooks": new URL(
-        "./node_modules/preact/hooks/dist/hooks.module.js",
-        import.meta.url,
-      ).pathname,
-      "preact/debug": new URL(
-        "./node_modules/preact/debug/dist/debug.module.js",
-        import.meta.url,
-      ).pathname,
-      "preact": new URL(
-        "./node_modules/preact/dist/preact.module.js",
-        import.meta.url,
-      ).pathname,
+      // Listed exact-matched so `preact` doesn't catch `preact/foo`.
+      {
+        find: /^preact$/,
+        replacement: new URL(
+          "./node_modules/preact/dist/preact.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/jsx-runtime$/,
+        replacement: new URL(
+          "./node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/hooks$/,
+        replacement: new URL(
+          "./node_modules/preact/hooks/dist/hooks.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/debug$/,
+        replacement: new URL(
+          "./node_modules/preact/debug/dist/debug.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/devtools$/,
+        replacement: new URL(
+          "./node_modules/preact/devtools/dist/devtools.module.js",
+          import.meta.url,
+        ).pathname,
+      },
       // Prefresh: source ESM files (no dist build for @prefresh/core).
-      "@prefresh/core": new URL(
-        "./node_modules/@prefresh/core/src/index.js",
-        import.meta.url,
-      ).pathname,
-      "@prefresh/utils": new URL(
-        "./node_modules/@prefresh/utils/src/index.js",
-        import.meta.url,
-      ).pathname,
-    },
+      {
+        find: /^@prefresh\/core$/,
+        replacement: new URL(
+          "./node_modules/@prefresh/core/src/index.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^@prefresh\/utils$/,
+        replacement: new URL(
+          "./node_modules/@prefresh/utils/src/index.js",
+          import.meta.url,
+        ).pathname,
+      },
+    ],
   },
   optimizeDeps: {
     // Force Vite's dev-mode pre-bundler (esbuild) to handle these
