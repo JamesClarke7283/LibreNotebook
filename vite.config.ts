@@ -25,10 +25,48 @@ export default defineConfig({
   // `cytoscape-fcose` imports `node:module` for an ESM-detection trick
   // we don't need. Pointing the import at a tiny empty shim lets the
   // bundler succeed without affecting runtime behaviour.
+  //
+  // The preact/* and @prefresh/* aliases are NOT cosmetic — they
+  // route those imports to absolute paths in node_modules/<pkg>/
+  // BEFORE the plugin chain sees the bare specifier, so
+  // `@deno/loader@0.4.0` (the Vite plugin from @fresh/plugin-vite)
+  // never gets to resolve them to its `node_modules/.deno/<pkg>@<ver>/...`
+  // hierarchy. That hierarchy's load step appends Vite's `?v=<hash>`
+  // cache-bust query directly to the file path passed to `open()`,
+  // which the OS rejects with ENOENT (the file exists, the suffix
+  // doesn't). optimizeDeps.include alone wasn't enough to win
+  // against @deno/loader — these aliases force the issue.
   resolve: {
     alias: {
       "node:module": new URL("./src/shims/node-module.ts", import.meta.url)
         .pathname,
+      // Preact: browser-conditional .module.js builds (the same files
+      // Vite would resolve via the package's "browser" exports).
+      "preact/jsx-runtime": new URL(
+        "./node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
+        import.meta.url,
+      ).pathname,
+      "preact/hooks": new URL(
+        "./node_modules/preact/hooks/dist/hooks.module.js",
+        import.meta.url,
+      ).pathname,
+      "preact/debug": new URL(
+        "./node_modules/preact/debug/dist/debug.module.js",
+        import.meta.url,
+      ).pathname,
+      "preact": new URL(
+        "./node_modules/preact/dist/preact.module.js",
+        import.meta.url,
+      ).pathname,
+      // Prefresh: source ESM files (no dist build for @prefresh/core).
+      "@prefresh/core": new URL(
+        "./node_modules/@prefresh/core/src/index.js",
+        import.meta.url,
+      ).pathname,
+      "@prefresh/utils": new URL(
+        "./node_modules/@prefresh/utils/src/index.js",
+        import.meta.url,
+      ).pathname,
     },
   },
   optimizeDeps: {

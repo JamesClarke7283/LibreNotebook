@@ -10,6 +10,15 @@
 // devUrl is hardcoded to 5173, so vite refuses to fall back to a
 // different port.
 //
+// NOTE: do NOT clean node_modules/.deno here — that directory is
+// the actual source-of-truth tree that `node_modules/<pkg>` and
+// `node_modules/.bin/<bin>` symlink INTO. Removing it orphans
+// every package symlink (including vite itself) and breaks the
+// dev server. The @deno/loader ENOENT problem is solved instead
+// by resolve.alias entries in vite.config.ts that route the
+// problematic imports to the symlinked node_modules/<pkg>/ paths
+// so the loader never sees them.
+//
 // Usage:
 //   deno run -A scripts/free-port.ts [port]
 // Default port is 5173.
