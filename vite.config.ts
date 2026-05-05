@@ -103,6 +103,30 @@ export default defineConfig({
           import.meta.url,
         ).pathname,
       },
+      // @preact/signals + @preact/signals-core: islands rely on
+      // these for `useSignal`. Without these aliases @deno/loader
+      // resolves them to `.deno/@preact+signals@2.9.0/...?v=hash`
+      // and the ?v= suffix ENOENTs. Worse, the failing path was
+      // landing TWO copies of the signals module on the page —
+      // signal mutations in one copy didn't sync to components
+      // reading from the other → "dead" tile clicks (the click
+      // gate checks `renaming.value`/`menuOpen.value` against a
+      // ghost copy that never updated). Browser-conditional
+      // `dist/<name>.module.js` entries per each package.json.
+      {
+        find: /^@preact\/signals$/,
+        replacement: new URL(
+          "./node_modules/@preact/signals/dist/signals.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^@preact\/signals-core$/,
+        replacement: new URL(
+          "./node_modules/@preact/signals-core/dist/signals-core.module.js",
+          import.meta.url,
+        ).pathname,
+      },
     ],
   },
   optimizeDeps: {
