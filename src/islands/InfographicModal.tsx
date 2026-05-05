@@ -125,6 +125,16 @@ export function InfographicModal(
     currentMermaid.value = null;
     renderedSvg.current = null;
 
+    // Dispatch the "studio-started" signal *before* awaiting /start.
+    // The route's first action is to write the studio item to disk,
+    // but it then runs the initial LLM generation before returning
+    // (~30s on slow Ollama). Without an early dispatch the
+    // StudioPanel doesn't poll until that 30s is up, so the user
+    // sees the modal hide and nothing else for half a minute. The
+    // listener retries polling for ~6s, easily catching the
+    // freshly-written item.
+    globalThis.dispatchEvent(new CustomEvent("librenotebook:studio-started"));
+
     try {
       // 1. Start
       const startRes = await fetch(
@@ -150,8 +160,6 @@ export function InfographicModal(
         iteration: number;
         mermaid: string;
       };
-      // Tell StudioPanel a new generating item exists.
-      globalThis.dispatchEvent(new CustomEvent("librenotebook:studio-started"));
 
       currentMermaid.value = startData.mermaid;
       iteration.value = startData.iteration;

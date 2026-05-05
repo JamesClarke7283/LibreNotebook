@@ -131,6 +131,19 @@ export const SparklesIcon = (p: IconProps) => (
   </svg>
 );
 
+/** Classic three-quarter-arc spinner, designed to be wrapped in
+ *  Tailwind's `animate-spin` so it reads as an unmistakable loader.
+ *  Drop-in replacement wherever a "pinwheel" / "still working" cue
+ *  is needed (studio item cards, source ingest, etc.). */
+export const LoaderIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path
+      d="M21 12a9 9 0 1 1-6.219-8.56"
+      style="opacity:0.95"
+    />
+  </svg>
+);
+
 // Studio tile icons.
 export const AudioIcon = (p: IconProps) => (
   <svg {...base(p)}>

@@ -31,6 +31,17 @@ export default defineConfig({
         .pathname,
     },
   },
+  optimizeDeps: {
+    // Force Vite's dev-mode pre-bundler (esbuild) to flatten mermaid
+    // into a single file. mermaid v11's main entry
+    // (dist/mermaid.core.mjs) fans out into ./chunks/* re-exports
+    // that the browser-side ESM linker chokes on with:
+    //   "Importing binding name 'default' cannot be resolved by
+    //    star export entries"
+    // Pre-bundling collapses those chunks so the browser sees a
+    // single ESM module with a proper `default` export.
+    include: ["mermaid", "mermaid/dist/mermaid.esm.min.mjs"],
+  },
   ssr: {
     // langchain ships dual ESM/CJS builds. Vite's SSR module-runner picks
     // the CJS twin and trips over `module is not defined`. Force the SSR

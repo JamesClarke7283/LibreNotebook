@@ -15,6 +15,7 @@ import {
   AudioIcon,
   FlashcardsIcon,
   InfographicIcon,
+  LoaderIcon,
   MindMapIcon,
   MoreVerticalIcon,
   NoteIcon,
@@ -129,11 +130,20 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
       }
     }
     if (items.value.some((i) => i.status === "generating")) tick();
-    // Listen for the InfographicModal "started" signal so we begin polling
-    // even if the page wasn't already polling.
-    function onStarted() {
-      // Force a refresh now and start polling.
-      tick();
+    // Listen for the InfographicModal "started" signal so we begin
+    // polling even if the page wasn't already polling. The
+    // `start` route can take 30s+ (it runs the initial LLM
+    // generation) but the studio item is created in storage in the
+    // first ~10ms — we just need to poll repeatedly until we see
+    // it. 12 attempts × 500ms ≈ 6s, well past the addStudioItem
+    // commit window.
+    async function onStarted() {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        if (cancelled) return;
+        await tick();
+        if (items.value.some((i) => i.status === "generating")) return;
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
     globalThis.addEventListener("librenotebook:studio-started", onStarted);
     return () => {
@@ -344,7 +354,7 @@ function StudioItemCard(
           }`}
         >
           {generating
-            ? <SparklesIcon size={16} class="animate-spin" />
+            ? <LoaderIcon size={16} class="animate-spin" />
             : <InfographicIcon size={16} />}
         </span>
         <span class="flex-1 min-w-0">
