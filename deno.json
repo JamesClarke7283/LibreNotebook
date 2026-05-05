@@ -2,7 +2,7 @@
   "nodeModulesDir": "manual",
   "tasks": {
     "check": "deno fmt --check . && deno lint . && deno check",
-    "dev": "vite",
+    "dev": "deno run -A scripts/free-port.ts 5173 && vite",
     "build": "vite build",
     "start": "deno serve -A _fresh/server.js",
     "update": "deno run -A -r jsr:@fresh/update .",
