@@ -241,6 +241,11 @@ export interface RefineResult {
  * has vision capability, the image is sent alongside the text prompt.
  * Otherwise we fall back to a text-only critique of the current Mermaid.
  *
+ * If `renderError` is provided, the previous iteration's Mermaid
+ * failed to render in the browser — we quote the error back to the
+ * model so it knows the specific syntax issue to repair, instead of
+ * just guessing from the broken code.
+ *
  * Returns both the new Mermaid and the model's self-assessed done
  * verdict so the caller can stop iterating once the model signals
  * convergence — replaces the old hard-coded best-of-3 loop.
@@ -250,13 +255,27 @@ export async function refineMermaid(
   params: InfographicParams,
   currentMermaid: string,
   imageDataUrl: string | null,
+  renderError: string | null = null,
 ): Promise<RefineResult> {
   const model = await buildChatModel(settings.llm);
 
   log.info("infographic refine", {
     hasVision: settings.llm.hasVision,
     hasImage: imageDataUrl !== null,
+    hasRenderError: renderError !== null,
   });
+
+  // Optional preface that tells the model the previous diagram
+  // failed to render, with the actual diagnostic. Inserted into both
+  // vision and text-only prompts.
+  const errorPreface = renderError
+    ? `IMPORTANT: the previous diagram failed to render in the browser. ` +
+      `The Mermaid renderer reported:\n  ${renderError}\n` +
+      `Diagnose what's wrong in the Current Mermaid below and emit a ` +
+      `corrected diagram that parses cleanly. Common Mermaid syntax ` +
+      `pitfalls: unbalanced brackets/quotes, parentheses inside node ` +
+      `labels, semicolons in mid-line, reserved words used as ids.\n\n`
+    : "";
   if (imageDataUrl && settings.llm.hasVision) {
     // Multimodal message: text + image. LangChain's HumanMessage accepts
     // a content array of typed parts; both ChatOpenAI (image_url) and
@@ -272,7 +291,7 @@ export async function refineMermaid(
               content: [
                 {
                   type: "text",
-                  text:
+                  text: errorPreface +
                     `User's description: "${
                       params.description || "(none)"
                     }"\n` +
@@ -308,7 +327,8 @@ export async function refineMermaid(
         [
           new SystemMessage(REFINE_SYSTEM_TEXT),
           new HumanMessage(
-            `User's description: "${params.description || "(none)"}"\n` +
+            errorPreface +
+              `User's description: "${params.description || "(none)"}"\n` +
               `Design intent: ${params.style}, ${params.detail}, ${params.orientation}.\n\n` +
               `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
               `Critique briefly, emit the improved diagram in a fenced ` +

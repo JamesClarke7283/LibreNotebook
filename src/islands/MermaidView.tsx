@@ -17,16 +17,28 @@ type Mermaid = {
 let mermaidPromise: Promise<Mermaid> | null = null;
 function loadMermaid(): Promise<Mermaid> {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then((mod) => {
-      const m = (mod.default ?? mod) as Mermaid;
-      m.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        securityLevel: "strict",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-      });
-      return m;
-    });
+    // Use mermaid's standalone min ESM bundle directly. The package's
+    // default `import "mermaid"` resolves to dist/mermaid.core.mjs,
+    // which fans out into ./chunks/... ESM files. Vite's dev mode
+    // mishandles those chunk re-exports under our flat npm layout
+    // and throws:
+    //   "Importing binding name 'default' cannot be resolved by
+    //    star export entries"
+    // The single-file `mermaid.esm.min.mjs` bundle is a self-
+    // contained ESM that imports cleanly under Vite + browser.
+    mermaidPromise = import("mermaid/dist/mermaid.esm.min.mjs").then(
+      (mod) => {
+        // deno-lint-ignore no-explicit-any
+        const m = ((mod as any).default ?? mod) as Mermaid;
+        m.initialize({
+          startOnLoad: false,
+          theme: "dark",
+          securityLevel: "strict",
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        });
+        return m;
+      },
+    );
   }
   return mermaidPromise;
 }

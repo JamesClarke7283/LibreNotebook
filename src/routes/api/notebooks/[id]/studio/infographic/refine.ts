@@ -36,6 +36,7 @@ export const handler = define.handlers({
     const ct = ctx.req.headers.get("content-type") ?? "";
     let jobId = "";
     let imageDataUrl: string | null = null;
+    let renderError: string | null = null;
 
     if (ct.startsWith("multipart/form-data")) {
       const form = await ctx.req.formData();
@@ -49,10 +50,23 @@ export const handler = define.handlers({
         );
         imageDataUrl = `data:${file.type || "image/png"};base64,${base64}`;
       }
+      const errField = form.get("renderError");
+      if (typeof errField === "string" && errField.length > 0) {
+        // Cap the error string so a runaway message can't blow the
+        // prompt budget. 800 chars is plenty for Mermaid's parse
+        // diagnostics.
+        renderError = errField.slice(0, 800);
+      }
     } else {
       try {
-        const body = await ctx.req.json() as { jobId?: string };
+        const body = await ctx.req.json() as {
+          jobId?: string;
+          renderError?: string;
+        };
         jobId = String(body.jobId ?? "");
+        if (typeof body.renderError === "string" && body.renderError.length) {
+          renderError = body.renderError.slice(0, 800);
+        }
       } catch {
         return new Response("Invalid body", { status: 400 });
       }
@@ -71,6 +85,7 @@ export const handler = define.handlers({
       jobId,
       iter: nextIter,
       hasImage: imageDataUrl !== null,
+      hasRenderError: renderError !== null,
       currentMermaidChars: last.mermaid.length,
     });
     const t0 = Date.now();
@@ -81,6 +96,7 @@ export const handler = define.handlers({
         job.params,
         last.mermaid,
         imageDataUrl,
+        renderError,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -184,6 +184,13 @@ export function InfographicModal(
         if (imgBlob) {
           fd.append("image", imgBlob, "rendered.png");
         }
+        // When the previous iteration's Mermaid failed to render,
+        // forward the actual error string so the next refine pass
+        // can quote it back to the model. Without this the model
+        // sees its broken output but doesn't know what's wrong.
+        if (r.error) {
+          fd.append("renderError", r.error);
+        }
         const ref = await fetch(
           `/api/notebooks/${notebookId}/studio/infographic/refine`,
           { method: "POST", body: fd },
@@ -217,6 +224,10 @@ export function InfographicModal(
       const finData = await fin.json() as { message: ChatMessage };
 
       onFinalised(finData.message);
+      // Auto-close once the chat message has landed — the user
+      // doesn't need to dismiss anything; the new diagram is now in
+      // the chat history and the studio item is `ready`.
+      onClose();
     } catch (err) {
       errorMsg.value = err instanceof Error ? err.message : String(err);
       phase.value = "error";
@@ -225,16 +236,48 @@ export function InfographicModal(
 
   if (!open) return null;
 
-  // Disable click-outside-to-close while a generation is running —
-  // accidentally clicking the backdrop mid-loop would orphan the job.
   function onBackdropClick() {
-    if (phase.value === "running") return;
     onClose();
+  }
+
+  // While `phase === "running"` the user shouldn't be locked out of
+  // the chat — the studio item card already shows iteration progress
+  // as the "loading bar on the asset". Render only the hidden
+  // MermaidView (off-screen so the SVG → PNG capture still works for
+  // the vision feedback loop) and skip the backdrop / centered card.
+  if (phase.value === "running") {
+    return (
+      <div
+        aria-hidden="true"
+        class="fixed pointer-events-none"
+        style="left: -9999px; top: -9999px; width: 1280px; height: 720px;"
+      >
+        {currentMermaid.value && (
+          <MermaidView
+            code={currentMermaid.value}
+            onRendered={(svg) => {
+              if (svgResolve.current) {
+                svgResolve.current({ svg, error: null });
+              } else renderedSvg.current = svg;
+            }}
+            onError={(msg) => {
+              if (svgResolve.current) {
+                svgResolve.current({ svg: null, error: msg });
+              }
+            }}
+          />
+        )}
+      </div>
+    );
   }
 
   return (
     <>
-      {/* Backdrop. Click closes (unless we're mid-generation). */}
+      {
+        /* Backdrop. Click closes — running phase has its own non-modal
+          rendering (above) so we never see the backdrop while the
+          generation loop is actively churning. */
+      }
       <div
         class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
         onClick={onBackdropClick}
@@ -411,53 +454,14 @@ export function InfographicModal(
             </div>
           )}
 
-          {phase.value === "running" && (
-            <div class="flex-1 overflow-y-auto scroll-thin px-5 py-5">
-              <div class="text-center text-zinc-300 mb-4">
-                <p class="text-sm">
-                  Refining diagram (iteration {iteration.value} of up to{" "}
-                  {maxIterations.value})…
-                </p>
-                <p class="text-[11px] text-zinc-500 mt-1">
-                  The model decides when to stop — earlier passes commonly
-                  finish at iteration{" "}
-                  {Math.min(3, maxIterations.value)}–{maxIterations.value}.
-                </p>
-                <div class="mx-auto mt-2 w-48 h-1 bg-zinc-800 rounded-full overflow-hidden">
-                  <div
-                    class="h-1 bg-yellow-400 transition-all"
-                    style={`width: ${
-                      Math.min(
-                        100,
-                        (iteration.value / maxIterations.value) * 100,
-                      )
-                    }%`}
-                  />
-                </div>
-                {renderError.value && (
-                  <p class="mt-3 text-[11px] text-amber-400">
-                    Last iteration's diagram had a syntax error — sending it
-                    back to the model for repair.
-                  </p>
-                )}
-              </div>
-              {currentMermaid.value && (
-                <MermaidView
-                  code={currentMermaid.value}
-                  onRendered={(svg) => {
-                    if (svgResolve.current) {
-                      svgResolve.current({ svg, error: null });
-                    } else renderedSvg.current = svg;
-                  }}
-                  onError={(msg) => {
-                    if (svgResolve.current) {
-                      svgResolve.current({ svg: null, error: msg });
-                    }
-                  }}
-                />
-              )}
-            </div>
-          )}
+          {
+            /* The "running" phase no longer renders a visible block here.
+              The hidden MermaidView used to capture the SVG → PNG for
+              the vision feedback loop is mounted off-screen above
+              (before the backdrop) so the user can keep using the chat
+              while the loop churns. Studio-item card iteration N/M is
+              the visible progress indicator. */
+          }
 
           {phase.value === "error" && (
             <div class="flex-1 px-5 py-5">
