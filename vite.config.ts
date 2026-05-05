@@ -21,30 +21,107 @@ export default defineConfig({
       "Access-Control-Allow-Headers": "*",
     },
   },
-  // Stub Node built-ins for the client bundle. Mermaid's transitive
-  // `cytoscape-fcose` imports `node:module` for an ESM-detection trick
-  // we don't need. Pointing the import at a tiny empty shim lets the
-  // bundler succeed without affecting runtime behaviour.
+  // Two-layer defence against @deno/loader@0.4.0's broken load() hook
+  // (which appends Vite's `?v=<hash>` cache-bust query straight to the
+  // file path passed to OS `open()` → ENOENT, even when the path is
+  // resolved correctly to node_modules/<pkg>/...). v0.2.8's
+  // dedupe-only revert was wrong: dedupe runs AFTER load, so it can't
+  // help when load itself is throwing ENOENT.
   //
-  // History note: v0.2.5–v0.2.7 attempted to alias every preact-family
-  // and @prefresh package to absolute file paths to dodge @deno/loader.
-  // That broke notebook tile clicks: islands ended up loading two
-  // copies of preact/@preact/signals (one through the alias, one
-  // through @deno/loader for paths the alias regex didn't catch),
-  // producing ghost-signal state that never updated. Reverted in
-  // v0.2.8 — `resolve.dedupe` below + `optimizeDeps.include` get us
-  // single-instance loading without playing whack-a-mole with import
-  // paths.
+  //   1. resolve.alias (regex exact-match, array form): rewrites the
+  //      bare specifier to an absolute file path before the plugin
+  //      chain sees it. @deno/loader never gets a chance to mint a
+  //      .deno/...?v= path. Array form + /^...$/ regex is required —
+  //      object-form does PARTIAL matching, so a "preact" key would
+  //      catch "preact/devtools" and produce <preact>.module.js/devtools.
+  //
+  //   2. resolve.dedupe: belt-and-suspenders. Even when a transitive
+  //      import path the alias regex doesn't catch slips through and
+  //      gets a second module instance via Vite's optimizer or
+  //      another plugin, dedupe collapses them to one instance so
+  //      signals/hooks/state share one store. Without this, two
+  //      preacts on the page produce ghost-signal reads where
+  //      `useSignal().value` writes in one component don't show up
+  //      in another → "dead" UI (notebook tile clicks, 3-dot menus).
+  //
+  // The node:module shim is a separate concern (Node built-in stub
+  // for cytoscape-fcose's ESM-detection trick).
   resolve: {
-    alias: {
-      "node:module": new URL("./src/shims/node-module.ts", import.meta.url)
-        .pathname,
-    },
-    // Force a single copy of each of these packages across SSR + the
-    // client bundle. This is the actual fix for "two preacts on the
-    // page" — even when @deno/loader resolves a specifier to one
-    // path and Vite's optimizer to another, dedupe collapses them to
-    // a single module instance so signals/hooks share one store.
+    alias: [
+      {
+        find: "node:module",
+        replacement: new URL("./src/shims/node-module.ts", import.meta.url)
+          .pathname,
+      },
+      // Preact: browser-conditional .module.js builds.
+      {
+        find: /^preact$/,
+        replacement: new URL(
+          "./node_modules/preact/dist/preact.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/jsx-runtime$/,
+        replacement: new URL(
+          "./node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/hooks$/,
+        replacement: new URL(
+          "./node_modules/preact/hooks/dist/hooks.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/debug$/,
+        replacement: new URL(
+          "./node_modules/preact/debug/dist/debug.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^preact\/devtools$/,
+        replacement: new URL(
+          "./node_modules/preact/devtools/dist/devtools.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      // @preact/signals + signals-core: islands' useSignal() store.
+      {
+        find: /^@preact\/signals$/,
+        replacement: new URL(
+          "./node_modules/@preact/signals/dist/signals.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^@preact\/signals-core$/,
+        replacement: new URL(
+          "./node_modules/@preact/signals-core/dist/signals-core.module.js",
+          import.meta.url,
+        ).pathname,
+      },
+      // Prefresh: HMR runtime; src/index.js (no dist build).
+      {
+        find: /^@prefresh\/core$/,
+        replacement: new URL(
+          "./node_modules/@prefresh/core/src/index.js",
+          import.meta.url,
+        ).pathname,
+      },
+      {
+        find: /^@prefresh\/utils$/,
+        replacement: new URL(
+          "./node_modules/@prefresh/utils/src/index.js",
+          import.meta.url,
+        ).pathname,
+      },
+    ],
+    // Single-instance enforcement for everything we aliased above.
+    // Catches transitive paths the alias regex doesn't see.
     dedupe: [
       "preact",
       "preact/hooks",
