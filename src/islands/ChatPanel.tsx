@@ -22,6 +22,9 @@ import {
 import { SourceViewer } from "./SourceViewer.tsx";
 import { MermaidView } from "./MermaidView.tsx";
 import { InfographicModal } from "./InfographicModal.tsx";
+import { getLogger } from "../lib/client-logger.ts";
+
+const clientLog = getLogger("chat-panel");
 
 interface Props {
   notebookId: string;
@@ -138,7 +141,17 @@ export function ChatPanel(props: Props) {
 
   async function send() {
     const q = draft.value.trim();
-    if (!q || streaming.value) return;
+    clientLog.debug("chat send invoked", {
+      length: q.length,
+      streaming: streaming.value,
+      notebookId: props.notebookId,
+    });
+    if (!q || streaming.value) {
+      clientLog.debug("chat send no-op", {
+        reason: !q ? "empty" : "already streaming",
+      });
+      return;
+    }
     streaming.value = true;
     draft.value = "";
 
@@ -161,10 +174,16 @@ export function ChatPanel(props: Props) {
     scrollToBottom();
 
     try {
+      clientLog.debug("chat fetch start", { notebookId: props.notebookId });
       const res = await fetch(`/api/notebooks/${props.notebookId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: q }),
+      });
+      clientLog.debug("chat fetch response", {
+        status: res.status,
+        ok: res.ok,
+        hasBody: !!res.body,
       });
       if (!res.ok || !res.body) {
         throw new Error(await res.text() || `HTTP ${res.status}`);
@@ -214,16 +233,21 @@ export function ChatPanel(props: Props) {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      clientLog.error("chat send failed", { error: msg });
       messages.value = messages.value.map((m) =>
         m.id === placeholder.id ? { ...m, content: `[error: ${msg}]` } : m
       );
     } finally {
+      clientLog.debug("chat send done", { messages: messages.value.length });
       streaming.value = false;
     }
   }
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
+      clientLog.debug("chat enter pressed", {
+        draftLength: draft.value.length,
+      });
       e.preventDefault();
       send();
     }
@@ -323,7 +347,13 @@ export function ChatPanel(props: Props) {
           </span>
           <button
             type="button"
-            onClick={send}
+            onClick={() => {
+              clientLog.debug("chat send button click", {
+                draftLength: draft.value.trim().length,
+                streaming: streaming.value,
+              });
+              send();
+            }}
             disabled={streaming.value || draft.value.trim().length === 0}
             class="p-1.5 rounded-full bg-zinc-100 text-zinc-900 hover:bg-white disabled:opacity-40"
             aria-label="Send"

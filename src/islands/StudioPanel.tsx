@@ -27,6 +27,9 @@ import {
   TableIcon,
 } from "../components/Icons.tsx";
 import type { StudioItem } from "../lib/types.ts";
+import { getLogger } from "../lib/client-logger.ts";
+
+const clientLog = getLogger("studio-panel");
 
 type IconCmp = (p: { size?: number; class?: string }) => preact.JSX.Element;
 type Accent =
@@ -82,6 +85,7 @@ const ACCENT_ICON_BG: Record<Accent, string> = {
 };
 
 function dispatchStudioAction(key: string) {
+  clientLog.debug("studio tile click", { key });
   globalThis.dispatchEvent(
     new CustomEvent("librenotebook:studio-action", { detail: { key } }),
   );
@@ -161,6 +165,7 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
       <header class="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
         <h2 class="text-zinc-100 font-medium">Studio</h2>
         <button
+          type="button"
           class="p-1.5 rounded hover:bg-zinc-800 text-zinc-400"
           aria-label="Toggle sidebar"
         >
@@ -256,15 +261,21 @@ function StudioItemCard(
 ) {
   const generating = item.status === "generating";
   const failed = item.status === "failed";
-  const ago = relativeTime(item.createdAt);
+  // SSR + first client paint render `createdAbs`; after mount the
+  // useRelativeTime hook flips `ago` to "5m ago". Both renders agree on
+  // the same text node, so Preact never sees a hydration mismatch.
+  const ago = useRelativeTime(item.createdAt);
+  const createdAbs = formatAbsolute(item.createdAt);
   const menuOpen = useSignal(false);
   const statusOpen = useSignal(false);
   const confirming = useSignal(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLDivElement>(null);
 
-  // Close the menu when the user clicks/taps outside of it. We use a
-  // capture-phase listener so we beat any inner `stopPropagation`.
+  // Close the menu when the user clicks/taps outside of it. Capture-phase
+  // is no longer strictly necessary (the row is no longer one big
+  // interactive container), but it's harmless and keeps behaviour
+  // consistent with other popovers in the app.
   useEffect(() => {
     if (!menuOpen.value) return;
     function onDocClick(e: MouseEvent) {
@@ -292,6 +303,11 @@ function StudioItemCard(
   }, [statusOpen.value]);
 
   function onCardClick() {
+    clientLog.debug("studio card click", {
+      id: item.id,
+      status: item.status,
+      title: item.title,
+    });
     if (item.status === "ready") {
       globalThis.dispatchEvent(
         new CustomEvent("librenotebook:open-studio-item", {
@@ -306,15 +322,25 @@ function StudioItemCard(
   }
 
   function onMenuClick(e: Event) {
+    // preventDefault is defensive — `type="button"` already opts out of
+    // form submission. No stopPropagation needed: the kebab is now a
+    // sibling of the title button, not nested inside it, so there's no
+    // parent click handler to suppress.
     e.preventDefault();
-    e.stopPropagation();
+    clientLog.debug("studio kebab click", {
+      id: item.id,
+      nextOpen: !menuOpen.value,
+    });
     menuOpen.value = !menuOpen.value;
     confirming.value = false;
   }
 
   function onDeleteClick(e: Event) {
     e.preventDefault();
-    e.stopPropagation();
+    clientLog.debug("studio delete click", {
+      id: item.id,
+      confirming: confirming.value,
+    });
     if (confirming.value) {
       menuOpen.value = false;
       confirming.value = false;
@@ -325,65 +351,83 @@ function StudioItemCard(
     }
   }
 
-  const cardClasses =
-    `w-full flex items-center gap-3 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-left ${
+  // Hover styles live on the non-interactive flex container so the whole
+  // row reacts to hover regardless of which child the cursor is over.
+  const rowClasses =
+    `flex items-center gap-3 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 transition ${
       item.status === "ready"
-        ? "hover:border-zinc-600 hover:bg-zinc-800 cursor-pointer"
-        : "hover:border-zinc-700 cursor-pointer"
+        ? "hover:border-zinc-600 hover:bg-zinc-800"
+        : "hover:border-zinc-700"
+    }`;
+
+  // `flex-1 min-w-0` is required for the inner `truncate` classes to
+  // actually truncate — flex items default to `min-width: auto`, which
+  // refuses to shrink below the content's intrinsic width.
+  const titleBtnClasses =
+    "flex-1 min-w-0 flex items-center gap-3 text-left bg-transparent border-0 p-0 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 rounded-lg";
+
+  // Bigger click target than the original p-1 size-14 (matches the kebabs
+  // in ChatPanel and NotebookGrid which use p-1.5 size-16). 22×22 was too
+  // easy to miss; 28×28 is the project's standard hit area.
+  const kebabClasses =
+    `p-1.5 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 ${
+      menuOpen.value ? "text-zinc-200 bg-zinc-800" : ""
+    }`;
+
+  const iconWrapClasses =
+    `inline-flex w-9 h-9 rounded-md items-center justify-center shrink-0 ${
+      failed ? "bg-red-500/15 text-red-300" : "bg-yellow-500/15 text-yellow-300"
     }`;
 
   return (
-    <li class="relative group">
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={onCardClick}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onCardClick();
-          }
-        }}
-        class={cardClasses}
-      >
-        <span
-          class={`inline-flex w-9 h-9 rounded-md items-center justify-center ${
-            failed
-              ? "bg-red-500/15 text-red-300"
-              : "bg-yellow-500/15 text-yellow-300"
-          }`}
+    <li class="relative">
+      <div class={rowClasses}>
+        <button
+          type="button"
+          onClick={onCardClick}
+          // Advertise the status popover for non-ready items; for ready
+          // items the click opens a modal that lives outside this DOM,
+          // so we deliberately omit aria-haspopup/expanded there.
+          aria-haspopup={generating || failed ? "dialog" : undefined}
+          aria-expanded={generating || failed ? statusOpen.value : undefined}
+          class={titleBtnClasses}
         >
-          {generating
-            ? <LoaderIcon size={16} class="animate-spin" />
-            : <InfographicIcon size={16} />}
-        </span>
-        <span class="flex-1 min-w-0">
-          <span class="block text-sm text-zinc-100 truncate">
-            {item.title}
-          </span>
-          <span class="block text-[11px] text-zinc-500 truncate">
+          <span class={iconWrapClasses}>
             {generating
-              ? `based on ${item.basedOnSources} source${
-                item.basedOnSources === 1 ? "" : "s"
-              }${item.iteration ? ` · iter ${item.iteration}/3` : ""}`
-              : failed
-              ? `failed${item.error ? ` · ${item.error.slice(0, 40)}` : ""}`
-              : `based on ${item.basedOnSources} source${
-                item.basedOnSources === 1 ? "" : "s"
-              } · ${ago}`}
+              ? <LoaderIcon size={16} class="animate-spin" />
+              : <InfographicIcon size={16} />}
           </span>
-        </span>
+          <span class="flex-1 min-w-0">
+            <span class="block text-sm text-zinc-100 truncate">
+              {item.title}
+            </span>
+            <span class="block text-[11px] text-zinc-500 truncate">
+              {generating
+                ? `based on ${item.basedOnSources} source${
+                  item.basedOnSources === 1 ? "" : "s"
+                }${item.iteration ? ` · iter ${item.iteration}/3` : ""}`
+                : failed
+                ? `failed${item.error ? ` · ${item.error.slice(0, 40)}` : ""}`
+                : (
+                  <>
+                    based on {item.basedOnSources}{" "}
+                    source{item.basedOnSources === 1 ? "" : "s"} ·{" "}
+                    <time dateTime={item.createdAt}>{ago ?? createdAbs}</time>
+                  </>
+                )}
+            </span>
+          </span>
+        </button>
+
         <button
           type="button"
           onClick={onMenuClick}
           aria-label="More actions"
           aria-haspopup="menu"
           aria-expanded={menuOpen.value}
-          class={`p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 shrink-0 ${
-            menuOpen.value ? "text-zinc-200 bg-zinc-800" : ""
-          }`}
+          class={kebabClasses}
         >
-          <MoreVerticalIcon size={14} />
+          <MoreVerticalIcon size={16} />
         </button>
       </div>
 
@@ -464,4 +508,33 @@ function relativeTime(iso: string): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+/** Stable absolute timestamp used as the SSR / first-paint fallback for
+ *  `<time>`. Locale is pinned to en-US so the server (Deno) and the
+ *  browser produce byte-identical strings — otherwise a German browser
+ *  hydrating an en-US-rendered string trips a text-node mismatch. */
+function formatAbsolute(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** Hydration-safe relative time. Returns null on SSR and on the very
+ *  first client paint, so the caller can render an absolute fallback
+ *  inside `<time>`. After mount we flip to "5m ago" and re-tick every
+ *  30 s so the value stays fresh while the page is open. */
+function useRelativeTime(iso: string): string | null {
+  const rel = useSignal<string | null>(null);
+  useEffect(() => {
+    rel.value = relativeTime(iso);
+    const t = setInterval(() => {
+      rel.value = relativeTime(iso);
+    }, 30_000);
+    return () => clearInterval(t);
+  }, [iso]);
+  return rel.value;
 }

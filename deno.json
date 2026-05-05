@@ -1,9 +1,9 @@
 {
-  "nodeModulesDir": "manual",
+  "nodeModulesDir": "auto",
   "tasks": {
     "check": "deno fmt --check . && deno lint . && deno check",
-    "dev": "deno run -A scripts/free-port.ts 5173 && vite",
-    "build": "vite build",
+    "dev": "deno run -A scripts/free-port.ts 5173 && deno run -A npm:vite",
+    "build": "deno run -A npm:vite build",
     "start": "deno serve -A _fresh/server.js",
     "update": "deno run -A -r jsr:@fresh/update .",
     "neu": "MULTI_USER=0 npx -y @neutralinojs/neu run",
@@ -63,6 +63,7 @@
     "@langchain/textsplitters": "npm:@langchain/textsplitters@^1.0.1",
     "@langchain/classic": "npm:@langchain/classic@^1.0.32",
     "@langchain/classic/": "npm:/@langchain/classic@^1.0.32/",
+    "js-tiktoken": "npm:js-tiktoken@^1.0.21",
     "pdfjs-dist": "npm:pdfjs-dist@^5.7.284",
     "pdfjs-dist/": "npm:/pdfjs-dist@^5.7.284/",
     "pngjs": "npm:pngjs@^7.0.0",

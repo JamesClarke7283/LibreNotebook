@@ -11,26 +11,39 @@ import {
 } from "../../../../lib/storage.ts";
 import { streamRagAnswer } from "../../../../lib/rag.ts";
 import type { Citation } from "../../../../lib/types.ts";
+import { getLogger } from "../../../../lib/logger.ts";
+
+const log = getLogger("chat-route");
 
 export const handler = define.handlers({
   async POST(ctx) {
+    const notebookId = ctx.params.id;
+    log.debug("chat POST received", { notebookId });
     const settings = await getSettings();
     if (!settings) {
+      log.debug("chat POST refused: settings missing", { notebookId });
       return new Response("Configure providers first", { status: 412 });
     }
-    const notebookId = ctx.params.id;
     const nb = await getNotebook(notebookId);
-    if (!nb) return new Response("Notebook not found", { status: 404 });
+    if (!nb) {
+      log.debug("chat POST refused: notebook not found", { notebookId });
+      return new Response("Notebook not found", { status: 404 });
+    }
 
     let body: { message?: unknown };
     try {
       body = await ctx.req.json();
     } catch {
+      log.debug("chat POST refused: invalid JSON", { notebookId });
       return new Response("Invalid JSON", { status: 400 });
     }
     const message = typeof body.message === "string" ? body.message.trim() : "";
-    if (!message) return new Response("Empty message", { status: 400 });
+    if (!message) {
+      log.debug("chat POST refused: empty message", { notebookId });
+      return new Response("Empty message", { status: 400 });
+    }
 
+    log.debug("chat POST accepted", { notebookId, length: message.length });
     const history = await listMessages(notebookId);
     await addMessage({ notebookId, role: "user", content: message });
 
@@ -40,6 +53,10 @@ export const handler = define.handlers({
       history,
       message,
     );
+    log.debug("chat stream opened", {
+      notebookId,
+      citations: handle.citations.length,
+    });
 
     // Tee the stream so we both forward to the client and parse for
     // persistence (extracting just the assistant text).

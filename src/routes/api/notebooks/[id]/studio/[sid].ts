@@ -20,8 +20,15 @@ const log = getLogger("studio-delete");
 export const handler = define.handlers({
   async DELETE(ctx) {
     const { id: notebookId, sid: itemId } = ctx.params;
+    log.debug("studio DELETE received", { notebookId, itemId });
     const nb = await getNotebook(notebookId);
-    if (!nb) return new Response("Notebook not found", { status: 404 });
+    if (!nb) {
+      log.debug("studio DELETE refused: notebook not found", {
+        notebookId,
+        itemId,
+      });
+      return new Response("Notebook not found", { status: 404 });
+    }
 
     const existing = await getStudioItem(notebookId, itemId);
     if (existing) {
@@ -32,6 +39,8 @@ export const handler = define.handlers({
         kind: existing.kind,
         status: existing.status,
       });
+    } else {
+      log.debug("studio DELETE: item already gone", { notebookId, itemId });
     }
     // Idempotent — never 404 on already-gone items.
     return new Response(null, { status: 204 });
