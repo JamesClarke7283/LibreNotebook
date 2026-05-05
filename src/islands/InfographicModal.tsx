@@ -18,8 +18,15 @@ interface Props {
 }
 
 const LANGUAGES = [
-  "English", "Español", "Français", "Deutsch", "Italiano", "Português",
-  "中文", "日本語", "한국어",
+  "English",
+  "Español",
+  "Français",
+  "Deutsch",
+  "Italiano",
+  "Português",
+  "中文",
+  "日本語",
+  "한국어",
 ];
 
 const STYLES = [
@@ -58,20 +65,32 @@ export function InfographicModal(
   // Generation state.
   const phase = useSignal<"form" | "running" | "error">("form");
   const iteration = useSignal(0);
-  const totalIterations = 3;
+  /** Defensive ceiling — matches the server's MAX_ITERATIONS so the
+   *  progress bar has a meaningful denominator while we wait for the
+   *  model to say `DONE: yes`. */
+  const maxIterations = useSignal(7);
   const currentMermaid = useSignal<string | null>(null);
+  const renderError = useSignal<string | null>(null);
   const errorMsg = useSignal<string | null>(null);
 
   // Hidden render target so we can ratch SVG → PNG between iterations.
+  type WaitResult = { svg: SVGElement | null; error: string | null };
   const renderedSvg = useRef<SVGElement | null>(null);
-  const svgResolve = useRef<((svg: SVGElement) => void) | null>(null);
+  const svgResolve = useRef<((r: WaitResult) => void) | null>(null);
 
-  function waitForSvg(): Promise<SVGElement> {
-    if (renderedSvg.current) return Promise.resolve(renderedSvg.current);
+  /** Wait for the MermaidView to either render successfully (SVG ready)
+   *  or fail to render (syntax error in LLM output). EITHER outcome
+   *  resolves so the generation loop keeps moving — without the error
+   *  branch a bad diagram on iteration 1 used to deadlock the loop
+   *  forever (waitForSvg never resolved). */
+  function waitForRender(): Promise<WaitResult> {
+    if (renderedSvg.current) {
+      return Promise.resolve({ svg: renderedSvg.current, error: null });
+    }
     return new Promise((resolve) => {
-      svgResolve.current = (svg) => {
-        renderedSvg.current = svg;
-        resolve(svg);
+      svgResolve.current = (r) => {
+        if (r.svg) renderedSvg.current = r.svg;
+        resolve(r);
         svgResolve.current = null;
       };
     });
@@ -83,9 +102,20 @@ export function InfographicModal(
       phase.value = "form";
       iteration.value = 0;
       currentMermaid.value = null;
+      renderError.value = null;
       errorMsg.value = null;
       renderedSvg.current = null;
     }
+  }, [open]);
+
+  // Close on Escape (popover semantics).
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   async function generate() {
@@ -111,7 +141,9 @@ export function InfographicModal(
           }),
         },
       );
-      if (!startRes.ok) throw new Error(await startRes.text() || "Start failed");
+      if (!startRes.ok) {
+        throw new Error(await startRes.text() || "Start failed");
+      }
       const startData = await startRes.json() as {
         jobId: string;
         studioItemId: string;
@@ -123,18 +155,28 @@ export function InfographicModal(
 
       currentMermaid.value = startData.mermaid;
       iteration.value = startData.iteration;
+      renderError.value = null;
 
       let done = false;
-      let mermaid = startData.mermaid;
       while (!done) {
-        // Wait for the just-mounted MermaidView to finish rendering.
+        // Wait for the just-mounted MermaidView to either render OR
+        // fail. Both paths resolve so the loop keeps moving even on
+        // syntax errors in LLM output.
         renderedSvg.current = null;
-        const svg = await waitForSvg();
+        const r = await waitForRender();
         let imgBlob: Blob | null = null;
-        try {
-          imgBlob = await svgElementToPng(svg);
-        } catch {
-          imgBlob = null;
+        if (r.svg) {
+          try {
+            imgBlob = await svgElementToPng(r.svg);
+          } catch {
+            imgBlob = null;
+          }
+        } else if (r.error) {
+          // No image to feed back; the next refine call will get a
+          // text-only critique. The model sees its own broken output
+          // in the `Current Mermaid` block and tends to fix syntax on
+          // the next pass.
+          renderError.value = r.error;
         }
 
         const fd = new FormData();
@@ -151,10 +193,15 @@ export function InfographicModal(
           iteration: number;
           mermaid: string;
           done: boolean;
+          modelDoneVerdict: boolean | null;
+          maxIterations: number;
         };
-        mermaid = refData.mermaid;
-        currentMermaid.value = mermaid;
+        currentMermaid.value = refData.mermaid;
         iteration.value = refData.iteration;
+        if (typeof refData.maxIterations === "number") {
+          maxIterations.value = refData.maxIterations;
+        }
+        renderError.value = null;
         done = refData.done;
       }
 
@@ -178,208 +225,267 @@ export function InfographicModal(
 
   if (!open) return null;
 
-  return (
-    <div class="absolute inset-0 z-30 bg-zinc-950/95 backdrop-blur-sm border border-zinc-800 rounded-xl flex flex-col">
-      <header class="flex items-center justify-between px-5 py-4 border-b border-zinc-800/60">
-        <div class="flex items-center gap-2 text-zinc-100">
-          <span class="inline-flex w-7 h-7 rounded-md bg-yellow-500/15 text-yellow-300 items-center justify-center text-sm">
-            ✦
-          </span>
-          <h3 class="font-medium">Customise infographic</h3>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          class="p-1.5 rounded-full hover:bg-zinc-800 text-zinc-400"
-          aria-label="Close"
-        >
-          ✕
-        </button>
-      </header>
+  // Disable click-outside-to-close while a generation is running —
+  // accidentally clicking the backdrop mid-loop would orphan the job.
+  function onBackdropClick() {
+    if (phase.value === "running") return;
+    onClose();
+  }
 
-      {phase.value === "form" && (
-        <div class="flex-1 overflow-y-auto scroll-thin px-5 py-5 space-y-6">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <span class="block text-sm text-zinc-200 mb-2">Choose language</span>
-              <select
-                value={language.value}
-                onChange={(e) =>
-                  (language.value =
-                    (e.currentTarget as HTMLSelectElement).value)}
-                class="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-              >
-                {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-              </select>
+  return (
+    <>
+      {/* Backdrop. Click closes (unless we're mid-generation). */}
+      <div
+        class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+        onClick={onBackdropClick}
+        aria-hidden="true"
+      />
+      {/* Centered popover card. */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Customise infographic"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+      >
+        <div
+          class="pointer-events-auto w-full max-w-2xl max-h-[88vh] bg-zinc-950 border border-zinc-800 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <header class="flex items-center justify-between px-5 py-4 border-b border-zinc-800/60">
+            <div class="flex items-center gap-2 text-zinc-100">
+              <span class="inline-flex w-7 h-7 rounded-md bg-yellow-500/15 text-yellow-300 items-center justify-center text-sm">
+                ✦
+              </span>
+              <h3 class="font-medium">Customise infographic</h3>
             </div>
-            <div>
-              <span class="block text-sm text-zinc-200 mb-2">Choose orientation</span>
-              <div class="inline-flex rounded-full bg-zinc-900 border border-zinc-800 p-1">
-                {(["Landscape", "Portrait", "Square"] as const).map((o) => (
-                  <button
-                    key={o}
-                    type="button"
-                    onClick={() => (orientation.value = o)}
-                    class={`px-3 py-1.5 rounded-full text-xs ${
-                      orientation.value === o
-                        ? "bg-zinc-100 text-zinc-900"
-                        : "text-zinc-300 hover:text-white"
-                    }`}
+            <button
+              type="button"
+              onClick={onClose}
+              class="p-1.5 rounded-full hover:bg-zinc-800 text-zinc-400"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </header>
+
+          {phase.value === "form" && (
+            <div class="flex-1 overflow-y-auto scroll-thin px-5 py-5 space-y-6">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <span class="block text-sm text-zinc-200 mb-2">
+                    Choose language
+                  </span>
+                  <select
+                    value={language.value}
+                    onChange={(
+                      e,
+                    ) => (language.value =
+                      (e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
                   >
-                    {o}
-                  </button>
-                ))}
+                    {LANGUAGES.map((l) => (
+                      <option key={l} value={l}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <span class="block text-sm text-zinc-200 mb-2">
+                    Choose orientation
+                  </span>
+                  <div class="inline-flex rounded-full bg-zinc-900 border border-zinc-800 p-1">
+                    {(["Landscape", "Portrait", "Square"] as const).map((o) => (
+                      <button
+                        key={o}
+                        type="button"
+                        onClick={() => (orientation.value = o)}
+                        class={`px-3 py-1.5 rounded-full text-xs ${
+                          orientation.value === o
+                            ? "bg-zinc-100 text-zinc-900"
+                            : "text-zinc-300 hover:text-white"
+                        }`}
+                      >
+                        {o}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <span class="block text-sm text-zinc-200 mb-2">
+                  Choose visual style
+                </span>
+                <div class="flex gap-3 overflow-x-auto scroll-thin pb-2">
+                  {STYLES.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => (style.value = s)}
+                      class={`shrink-0 w-32 rounded-xl border ${
+                        style.value === s
+                          ? "border-zinc-100 ring-2 ring-zinc-100/40"
+                          : "border-zinc-800 hover:border-zinc-600"
+                      } overflow-hidden text-left`}
+                    >
+                      <div
+                        class={`h-20 bg-gradient-to-br ${
+                          STYLE_BG[s] ?? "from-zinc-900 to-zinc-700/30"
+                        } flex items-center justify-center text-2xl text-zinc-200`}
+                      >
+                        {s === "Sketch note"
+                          ? "✏️"
+                          : s === "Kawaii"
+                          ? "🐙"
+                          : s === "Professional"
+                          ? "📊"
+                          : s === "Scientific"
+                          ? "🚀"
+                          : s === "Anime"
+                          ? "✨"
+                          : s === "Retro"
+                          ? "📺"
+                          : s === "Minimal"
+                          ? "▢"
+                          : "🎨"}
+                      </div>
+                      <div class="px-3 py-2 text-xs text-zinc-200">{s}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span class="block text-sm text-zinc-200 mb-2">
+                  Level of detail
+                </span>
+                <div class="inline-flex rounded-full bg-zinc-900 border border-zinc-800 p-1">
+                  {(["Concise", "Standard", "Detailed"] as const).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => (detail.value = d)}
+                      class={`px-3 py-1.5 rounded-full text-xs ${
+                        detail.value === d
+                          ? "bg-zinc-100 text-zinc-900"
+                          : "text-zinc-300 hover:text-white"
+                      }`}
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span class="block text-sm text-zinc-200 mb-2">
+                  Describe the infographic that you want to create
+                </span>
+                <textarea
+                  value={description.value}
+                  onInput={(
+                    e,
+                  ) => (description.value =
+                    (e.currentTarget as HTMLTextAreaElement).value)}
+                  rows={3}
+                  placeholder="Guide the style, colour or focus: 'Use a blue colour theme and highlight the 3 key stats'."
+                  class="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+              </div>
+
+              <div class="flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  class="px-4 py-2 rounded-full border border-zinc-700 text-zinc-200 text-sm hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={generate}
+                  class="px-5 py-2 rounded-full bg-blue-500 text-white text-sm font-medium hover:bg-blue-400"
+                >
+                  Generate
+                </button>
               </div>
             </div>
-          </div>
+          )}
 
-          <div>
-            <span class="block text-sm text-zinc-200 mb-2">Choose visual style</span>
-            <div class="flex gap-3 overflow-x-auto scroll-thin pb-2">
-              {STYLES.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => (style.value = s)}
-                  class={`shrink-0 w-32 rounded-xl border ${
-                    style.value === s
-                      ? "border-zinc-100 ring-2 ring-zinc-100/40"
-                      : "border-zinc-800 hover:border-zinc-600"
-                  } overflow-hidden text-left`}
-                >
+          {phase.value === "running" && (
+            <div class="flex-1 overflow-y-auto scroll-thin px-5 py-5">
+              <div class="text-center text-zinc-300 mb-4">
+                <p class="text-sm">
+                  Refining diagram (iteration {iteration.value} of up to{" "}
+                  {maxIterations.value})…
+                </p>
+                <p class="text-[11px] text-zinc-500 mt-1">
+                  The model decides when to stop — earlier passes commonly
+                  finish at iteration{" "}
+                  {Math.min(3, maxIterations.value)}–{maxIterations.value}.
+                </p>
+                <div class="mx-auto mt-2 w-48 h-1 bg-zinc-800 rounded-full overflow-hidden">
                   <div
-                    class={`h-20 bg-gradient-to-br ${
-                      STYLE_BG[s] ?? "from-zinc-900 to-zinc-700/30"
-                    } flex items-center justify-center text-2xl text-zinc-200`}
-                  >
-                    {s === "Sketch note"
-                      ? "✏️"
-                      : s === "Kawaii"
-                      ? "🐙"
-                      : s === "Professional"
-                      ? "📊"
-                      : s === "Scientific"
-                      ? "🚀"
-                      : s === "Anime"
-                      ? "✨"
-                      : s === "Retro"
-                      ? "📺"
-                      : s === "Minimal"
-                      ? "▢"
-                      : "🎨"}
-                  </div>
-                  <div class="px-3 py-2 text-xs text-zinc-200">{s}</div>
-                </button>
-              ))}
+                    class="h-1 bg-yellow-400 transition-all"
+                    style={`width: ${
+                      Math.min(
+                        100,
+                        (iteration.value / maxIterations.value) * 100,
+                      )
+                    }%`}
+                  />
+                </div>
+                {renderError.value && (
+                  <p class="mt-3 text-[11px] text-amber-400">
+                    Last iteration's diagram had a syntax error — sending it
+                    back to the model for repair.
+                  </p>
+                )}
+              </div>
+              {currentMermaid.value && (
+                <MermaidView
+                  code={currentMermaid.value}
+                  onRendered={(svg) => {
+                    if (svgResolve.current) {
+                      svgResolve.current({ svg, error: null });
+                    } else renderedSvg.current = svg;
+                  }}
+                  onError={(msg) => {
+                    if (svgResolve.current) {
+                      svgResolve.current({ svg: null, error: msg });
+                    }
+                  }}
+                />
+              )}
             </div>
-          </div>
+          )}
 
-          <div>
-            <span class="block text-sm text-zinc-200 mb-2">Level of detail</span>
-            <div class="inline-flex rounded-full bg-zinc-900 border border-zinc-800 p-1">
-              {(["Concise", "Standard", "Detailed"] as const).map((d) => (
+          {phase.value === "error" && (
+            <div class="flex-1 px-5 py-5">
+              <div class="rounded-lg bg-red-950/40 border border-red-900/60 p-3 text-sm text-red-200">
+                <p class="font-medium mb-1">Generation failed</p>
+                <p class="text-xs">{errorMsg.value}</p>
+              </div>
+              <div class="flex items-center justify-end gap-3 mt-4">
                 <button
-                  key={d}
                   type="button"
-                  onClick={() => (detail.value = d)}
-                  class={`px-3 py-1.5 rounded-full text-xs ${
-                    detail.value === d
-                      ? "bg-zinc-100 text-zinc-900"
-                      : "text-zinc-300 hover:text-white"
-                  }`}
+                  onClick={onClose}
+                  class="px-4 py-2 rounded-full border border-zinc-700 text-zinc-200 text-sm hover:bg-zinc-800"
                 >
-                  {d}
+                  Close
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={generate}
+                  class="px-5 py-2 rounded-full bg-blue-500 text-white text-sm font-medium hover:bg-blue-400"
+                >
+                  Retry
+                </button>
+              </div>
             </div>
-          </div>
-
-          <div>
-            <span class="block text-sm text-zinc-200 mb-2">
-              Describe the infographic that you want to create
-            </span>
-            <textarea
-              value={description.value}
-              onInput={(e) =>
-                (description.value =
-                  (e.currentTarget as HTMLTextAreaElement).value)}
-              rows={3}
-              placeholder="Guide the style, colour or focus: 'Use a blue colour theme and highlight the 3 key stats'."
-              class="w-full rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
-            />
-          </div>
-
-          <div class="flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              class="px-4 py-2 rounded-full border border-zinc-700 text-zinc-200 text-sm hover:bg-zinc-800"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={generate}
-              class="px-5 py-2 rounded-full bg-blue-500 text-white text-sm font-medium hover:bg-blue-400"
-            >
-              Generate
-            </button>
-          </div>
-        </div>
-      )}
-
-      {phase.value === "running" && (
-        <div class="flex-1 overflow-y-auto scroll-thin px-5 py-5">
-          <div class="text-center text-zinc-300 mb-4">
-            <p class="text-sm">
-              Refining diagram ({iteration.value}/{totalIterations})…
-            </p>
-            <div class="mx-auto mt-2 w-48 h-1 bg-zinc-800 rounded-full overflow-hidden">
-              <div
-                class="h-1 bg-yellow-400 transition-all"
-                style={`width: ${
-                  Math.min(100, (iteration.value / totalIterations) * 100)
-                }%`}
-              />
-            </div>
-          </div>
-          {currentMermaid.value && (
-            <MermaidView
-              code={currentMermaid.value}
-              onRendered={(svg) => {
-                if (svgResolve.current) svgResolve.current(svg);
-                else renderedSvg.current = svg;
-              }}
-            />
           )}
         </div>
-      )}
-
-      {phase.value === "error" && (
-        <div class="flex-1 px-5 py-5">
-          <div class="rounded-lg bg-red-950/40 border border-red-900/60 p-3 text-sm text-red-200">
-            <p class="font-medium mb-1">Generation failed</p>
-            <p class="text-xs">{errorMsg.value}</p>
-          </div>
-          <div class="flex items-center justify-end gap-3 mt-4">
-            <button
-              type="button"
-              onClick={onClose}
-              class="px-4 py-2 rounded-full border border-zinc-700 text-zinc-200 text-sm hover:bg-zinc-800"
-            >
-              Close
-            </button>
-            <button
-              type="button"
-              onClick={generate}
-              class="px-5 py-2 rounded-full bg-blue-500 text-white text-sm font-medium hover:bg-blue-400"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+      </div>
+    </>
   );
 }
 

@@ -36,9 +36,14 @@ interface Props {
   /** Called once with the mounted <svg> element (used by InfographicModal
    *  to capture the diagram as a PNG for the next iteration). */
   onRendered?: (svg: SVGElement) => void;
+  /** Called when mermaid.render() throws (typically a syntax error in
+   *  LLM-generated code). Used by InfographicModal to keep the
+   *  generation loop moving — without this hook a render failure
+   *  leaves `waitForSvg()` pending forever and the loop deadlocks. */
+  onError?: (message: string) => void;
 }
 
-export function MermaidView({ code, onRendered }: Props) {
+export function MermaidView({ code, onRendered, onError }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const error = useSignal<string | null>(null);
 
@@ -55,9 +60,13 @@ export function MermaidView({ code, onRendered }: Props) {
         const svgEl = ref.current.querySelector("svg");
         if (svgEl && onRendered) onRendered(svgEl as SVGElement);
       } catch (err) {
-        if (!cancelled) {
-          error.value = err instanceof Error ? err.message : String(err);
-        }
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        error.value = msg;
+        // CRITICAL: notify the parent that we couldn't render. Without
+        // this, InfographicModal's waitForSvg() never resolves and the
+        // generation loop hangs forever on bad LLM output.
+        if (onError) onError(msg);
       }
     })();
     return () => {

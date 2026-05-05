@@ -20,7 +20,11 @@ import { readJob, writeJob } from "../../../../../../lib/jobs.ts";
 import { getLogger } from "../../../../../../lib/logger.ts";
 
 const log = getLogger("infographic-refine");
-const MIN_ITERATIONS = 3;
+
+/** Hard ceiling on refinement passes. The model decides when to stop
+ *  via `DONE: yes` in its output, but if it never converges we cap
+ *  the loop here so a stubborn model doesn't iterate indefinitely. */
+const MAX_ITERATIONS = 7;
 
 export const handler = define.handlers({
   async POST(ctx) {
@@ -70,9 +74,9 @@ export const handler = define.handlers({
       currentMermaidChars: last.mermaid.length,
     });
     const t0 = Date.now();
-    let mermaid: string;
+    let result;
     try {
-      mermaid = await refineMermaid(
+      result = await refineMermaid(
         settings,
         job.params,
         last.mermaid,
@@ -98,20 +102,30 @@ export const handler = define.handlers({
       jobId,
       iter: nextIter,
       elapsedMs: Date.now() - t0,
-      mermaidChars: mermaid.length,
+      mermaidChars: result.mermaid.length,
+      modelDoneVerdict: result.done,
     });
 
-    job.history.push({ iter: nextIter, mermaid });
+    job.history.push({ iter: nextIter, mermaid: result.mermaid });
     await writeJob(job);
 
     await updateStudioItem(notebookId, job.studioItemId, {
       iteration: job.history.length,
     });
 
+    // Convergence rules (replaces the old fixed-3-iterations rule):
+    //   1. The model says DONE: yes  → stop.
+    //   2. We've hit MAX_ITERATIONS  → stop (defensive cap).
+    // Otherwise keep iterating — the client posts the next /refine.
+    const done = result.done === true ||
+      job.history.length >= MAX_ITERATIONS;
+
     return Response.json({
       iteration: job.history.length,
-      mermaid,
-      done: job.history.length >= MIN_ITERATIONS,
+      mermaid: result.mermaid,
+      done,
+      modelDoneVerdict: result.done,
+      maxIterations: MAX_ITERATIONS,
     });
   },
 });

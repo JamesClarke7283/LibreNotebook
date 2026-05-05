@@ -63,15 +63,28 @@ Constraints:
 const REFINE_SYSTEM_TEXT =
   `You are reviewing your own infographic. Critique it briefly against
 the user's description, then output an IMPROVED Mermaid diagram.
-Respond ONLY with a fenced \`\`\`mermaid block — no prose, no critique
-text outside the block. Keep the same diagram orientation unless it's
-obviously wrong.`;
+
+Output format (in this exact order, nothing else):
+1. A fenced code block:    \`\`\`mermaid ... \`\`\`
+2. Then a single line with your verdict:    DONE: yes   or   DONE: no
+   - \`DONE: yes\` means the diagram now matches the user's intent
+     well enough that further refinement won't help — STOP iterating.
+   - \`DONE: no\` means another refinement pass would still improve it.
+
+Keep the same diagram orientation unless it's obviously wrong.`;
 
 const REFINE_SYSTEM_VISION =
   `You are reviewing your own infographic. The image attached is the
 current rendering. Critique it briefly against the user's description,
-then output an IMPROVED Mermaid diagram. Respond ONLY with a fenced
-\`\`\`mermaid block — no prose, no critique text outside the block.
+then output an IMPROVED Mermaid diagram.
+
+Output format (in this exact order, nothing else):
+1. A fenced code block:    \`\`\`mermaid ... \`\`\`
+2. Then a single line with your verdict:    DONE: yes   or   DONE: no
+   - \`DONE: yes\` means the rendered image already matches the user's
+     intent well enough — STOP iterating.
+   - \`DONE: no\` means another refinement pass would still improve it.
+
 Keep the same diagram orientation unless it's obviously wrong.`;
 
 /** Pull the first ```mermaid block out of an LLM reply. Falls back to
@@ -84,6 +97,20 @@ export function extractMermaid(raw: string): string {
   const generic = raw.match(/```\s*\n([\s\S]*?)```/);
   if (generic) return generic[1].trim();
   return raw.replace(/```/g, "").trim();
+}
+
+/** Parse the trailing `DONE: yes/no` verdict the refine prompts ask for.
+ *  Returns null if the model didn't emit one (older outputs, or it
+ *  forgot the format) — the caller treats null as "keep iterating up
+ *  to the max". */
+export function extractDoneVerdict(raw: string): boolean | null {
+  // Look at the last ~200 chars where the marker should be. The greedy
+  // regex picks the LAST DONE: line in case the model echoes the
+  // instruction earlier in its critique.
+  const matches = raw.match(/DONE:\s*(yes|no|true|false)\b/gi);
+  if (!matches || matches.length === 0) return null;
+  const last = matches[matches.length - 1];
+  return /yes|true/i.test(last);
 }
 
 function asString(content: unknown): string {
@@ -196,17 +223,34 @@ export async function generateInitialMermaid(
   return mermaid;
 }
 
+export interface RefineResult {
+  /** The improved Mermaid diagram (always present, even when the model
+   *  thinks the previous iteration was already good — we ask for a
+   *  diagram every pass). */
+  mermaid: string;
+  /** What the model thinks of its own work:
+   *  - `true`  → the model says STOP, no further refinement helps.
+   *  - `false` → the model says another pass would still improve it.
+   *  - `null`  → the model didn't emit a DONE verdict (treat as "keep
+   *              going" up to MAX_ITERATIONS). */
+  done: boolean | null;
+}
+
 /**
  * Run one refinement pass. If `imageDataUrl` is provided AND the LLM
  * has vision capability, the image is sent alongside the text prompt.
  * Otherwise we fall back to a text-only critique of the current Mermaid.
+ *
+ * Returns both the new Mermaid and the model's self-assessed done
+ * verdict so the caller can stop iterating once the model signals
+ * convergence — replaces the old hard-coded best-of-3 loop.
  */
 export async function refineMermaid(
   settings: AppSettings,
   params: InfographicParams,
   currentMermaid: string,
   imageDataUrl: string | null,
-): Promise<string> {
+): Promise<RefineResult> {
   const model = await buildChatModel(settings.llm);
 
   log.info("infographic refine", {
@@ -233,7 +277,7 @@ export async function refineMermaid(
                       params.description || "(none)"
                     }"\n` +
                     `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
-                    `Critique against the description, then emit the improved diagram.`,
+                    `Critique against the description, then emit the improved diagram, then DONE: yes/no.`,
                 },
                 { type: "image_url", image_url: { url: imageDataUrl } },
               ],
@@ -242,7 +286,17 @@ export async function refineMermaid(
           { signal },
         ),
     );
-    return extractMermaid(asString(reply.content));
+    const text = asString(reply.content);
+    const result = {
+      mermaid: extractMermaid(text),
+      done: extractDoneVerdict(text),
+    };
+    log.info("infographic refine result", {
+      mode: "vision",
+      mermaidChars: result.mermaid.length,
+      done: result.done,
+    });
+    return result;
   }
 
   // Text-only fallback.
@@ -257,14 +311,24 @@ export async function refineMermaid(
             `User's description: "${params.description || "(none)"}"\n` +
               `Design intent: ${params.style}, ${params.detail}, ${params.orientation}.\n\n` +
               `Current Mermaid:\n\`\`\`mermaid\n${currentMermaid}\n\`\`\`\n\n` +
-              `Critique briefly, then emit the improved diagram in a fenced ` +
-              `\`\`\`mermaid block.`,
+              `Critique briefly, emit the improved diagram in a fenced ` +
+              `\`\`\`mermaid block, then DONE: yes/no.`,
           ),
         ],
         { signal },
       ),
   );
-  return extractMermaid(asString(reply.content));
+  const text = asString(reply.content);
+  const result = {
+    mermaid: extractMermaid(text),
+    done: extractDoneVerdict(text),
+  };
+  log.info("infographic refine result", {
+    mode: "text",
+    mermaidChars: result.mermaid.length,
+    done: result.done,
+  });
+  return result;
 }
 
 /**

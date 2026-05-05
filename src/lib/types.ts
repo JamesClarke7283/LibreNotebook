@@ -138,11 +138,26 @@ export interface NotebookSource {
  * markers into hoverable popovers that show `content` and link back to
  * the originating source via `sourceId` / `sourceName`.
  */
+/** A highlighted span within a citation's chunk content. Multiple
+ *  ranges per citation are common — different sentences from the same
+ *  chunk can each be relevant to different parts of the answer. */
+export interface CitationRange {
+  /** UTF-16 character offset into `content` (inclusive). */
+  start: number;
+  /** UTF-16 character offset into `content` (exclusive). */
+  end: number;
+}
+
 export interface Citation {
   index: number;
   sourceId: string;
   sourceName: string;
   content: string;
+  /** Sentence-level spans within `content` that the assistant's answer
+   *  echoed verbatim (4-gram overlap heuristic, computed server-side
+   *  after the LLM stream completes). When absent or empty, the UI
+   *  falls back to highlighting the whole chunk. */
+  ranges?: CitationRange[];
 }
 
 export interface ChatMessage {

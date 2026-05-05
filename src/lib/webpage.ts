@@ -6,6 +6,11 @@
 // Images are downloaded to the source's images/ folder so the chat
 // pipeline can attach them to the LLM request when the model is
 // vision-capable.
+//
+// The actual Readability + linkedom call is exposed as a pure
+// `parseReadable(html, baseUrl)` helper so unit tests can run without
+// network. `extractWebpage(url, ...)` wraps it with the fetch +
+// image-download side effects.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -26,6 +31,10 @@ const parseHTML = linkedomMod.parseHTML ?? linkedomMod.default?.parseHTML;
 
 const MAX_IMAGES = 10;
 const MAX_IMAGE_BYTES = 4_000_000; // 4 MB per image
+/** Below this many readable characters we treat the page as
+ *  Readability-failed and either fall back to the body's textContent
+ *  or surface a helpful error. */
+const MIN_READABLE_CHARS = 50;
 
 export interface WebpageExtract {
   title: string;
@@ -33,6 +42,96 @@ export interface WebpageExtract {
   byline?: string;
   excerpt?: string;
   images: SourceImage[];
+}
+
+/** Pure parsed-page output — no I/O. `imageRefs` are the absolute
+ *  source URLs found inside the article's images; the caller is
+ *  responsible for downloading them if it wants to keep them on disk. */
+export interface ReadableParsed {
+  title: string;
+  content: string;
+  byline?: string;
+  excerpt?: string;
+  imageRefs: Array<{ src: string; alt?: string }>;
+}
+
+/**
+ * Run Mozilla Readability on raw HTML. Pure function — testable
+ * without network. Returns null if the page yielded no useful content.
+ */
+export function parseReadable(
+  html: string,
+  baseUrl: string,
+): ReadableParsed | null {
+  const { document } = parseHTML(html);
+  // Readability mutates its input; pass the parsed doc directly.
+  const article = new Readability(document).parse();
+
+  // Helper: build plain text from the page DOM as a last-resort
+  // fallback (Readability sometimes returns null on JS-heavy pages
+  // with valid <article>/<main>/<body> content the user *did* see).
+  const fallbackText = (() => {
+    const main = document.querySelector("article") ??
+      document.querySelector("main") ??
+      document.body ??
+      document.documentElement;
+    return ((main?.textContent ?? "") as string).replace(/\s+/g, " ").trim();
+  })();
+
+  if (!article || !article.content) {
+    if (fallbackText.length >= MIN_READABLE_CHARS) {
+      const titleEl = document.querySelector("title") as
+        | { textContent?: string }
+        | null;
+      return {
+        title: (titleEl?.textContent ?? baseUrl).trim() || baseUrl,
+        content: fallbackText,
+        imageRefs: [],
+      };
+    }
+    return null;
+  }
+
+  // Walk the cleaned article's images.
+  const { document: articleDoc } = parseHTML(article.content);
+  const imgEls = Array.from(
+    articleDoc.querySelectorAll("img") as NodeListOf<Element>,
+  );
+  const imageRefs: Array<{ src: string; alt?: string }> = [];
+  for (const el of imgEls) {
+    const src = el.getAttribute("src") ?? el.getAttribute("data-src") ?? "";
+    if (!src) continue;
+    let absolute = src;
+    try {
+      absolute = new URL(src, baseUrl).href;
+    } catch { /* keep relative */ }
+    imageRefs.push({
+      src: absolute,
+      alt: el.getAttribute("alt") ?? undefined,
+    });
+  }
+
+  // Prefer Readability's pre-cleaned plain-text. Fall back to walking
+  // the article HTML when textContent is missing (older Readability
+  // builds occasionally skipped it). Last resort: the page-wide
+  // fallback we computed above.
+  const rawText = (article as { textContent?: string }).textContent ??
+    (articleDoc.body as { textContent?: string } | null)?.textContent ??
+    (articleDoc.documentElement as { textContent?: string } | null)
+      ?.textContent ??
+    "";
+  const cleaned = rawText.replace(/\s+/g, " ").trim();
+  const content = cleaned.length >= MIN_READABLE_CHARS ? cleaned : fallbackText;
+
+  if (content.length < MIN_READABLE_CHARS) return null;
+
+  return {
+    title: article.title?.trim() || baseUrl,
+    content,
+    byline: article.byline ?? undefined,
+    excerpt: article.excerpt ?? undefined,
+    imageRefs,
+  };
 }
 
 /** Decide a sensible filename from a URL + content-type. */
@@ -55,18 +154,11 @@ function imageFilename(idx: number, url: string, ct: string): string {
 
 async function downloadImage(
   imgUrl: string,
-  pageUrl: string,
 ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-  let absolute: string;
-  try {
-    absolute = new URL(imgUrl, pageUrl).href;
-  } catch {
-    return null;
-  }
-  if (!/^https?:/.test(absolute)) return null;
+  if (!/^https?:/.test(imgUrl)) return null;
   let res: Response;
   try {
-    res = await fetch(absolute, {
+    res = await fetch(imgUrl, {
       headers: { "User-Agent": "LibreNotebook/0.1 (+webpage-extract)" },
       signal: AbortSignal.timeout(15_000),
     });
@@ -85,85 +177,74 @@ export async function extractWebpage(
   url: string,
   imagesOutDir: string,
 ): Promise<WebpageExtract> {
-  // 1. Fetch the page.
+  // 1. Fetch the page. The User-Agent is shaped to look like a real
+  //    browser — many sites 403 the obvious-bot agents.
+  log.info("fetching", { url });
+  const t0 = Date.now();
   const res = await fetch(url, {
     headers: {
       "User-Agent":
-        "Mozilla/5.0 (compatible; LibreNotebook/0.1; +https://librenotebook.local)",
-      Accept: "text/html,application/xhtml+xml",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/123.0.0.0 Safari/537.36 LibreNotebook/0.1",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
     },
     redirect: "follow",
     signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) {
-    throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+    throw new Error(
+      `Could not fetch ${url}: ${res.status} ${res.statusText}. ` +
+        `If the site requires JavaScript or login, save the article text manually.`,
+    );
   }
   const html = await res.text();
+  log.info("fetched", { url, bytes: html.length, elapsedMs: Date.now() - t0 });
 
-  // 2. Parse the page DOM and run Readability on it.
-  const { document } = parseHTML(html);
-  // Readability is destructive — pass it the parsed doc directly.
-  const article = new Readability(document).parse();
-  if (!article || !article.content) {
+  // 2. Run Readability on it (pure step — also covered by the unit test
+  //    in tests/unit/webpage.test.ts).
+  const parsed = parseReadable(html, url);
+  if (!parsed) {
     throw new Error(
-      "This page didn't yield any readable content (try saving the article text manually instead).",
+      "Readability couldn't extract a readable article from this page. " +
+        "It may be JavaScript-rendered or blocked behind a login. " +
+        "Try saving the article text manually.",
     );
   }
 
-  // 3. Walk the cleaned article HTML for images and turn the rest into
-  //    plain text.
-  const { document: articleDoc } = parseHTML(article.content);
-  const imgEls = Array.from(
-    articleDoc.querySelectorAll("img") as NodeListOf<Element>,
-  );
-
+  // 3. Download the images Readability surfaced.
   await mkdir(imagesOutDir, { recursive: true });
   const images: SourceImage[] = [];
   let savedCount = 0;
-  for (let i = 0; i < imgEls.length && savedCount < MAX_IMAGES; i++) {
-    const el = imgEls[i];
-    const src = el.getAttribute("src") ?? el.getAttribute("data-src") ?? "";
-    const alt = el.getAttribute("alt") ?? undefined;
-    if (!src) continue;
-    const dl = await downloadImage(src, url);
+  for (let i = 0; i < parsed.imageRefs.length && savedCount < MAX_IMAGES; i++) {
+    const ref = parsed.imageRefs[i];
+    const dl = await downloadImage(ref.src);
     if (!dl) continue;
-    const filename = imageFilename(savedCount, src, dl.contentType);
+    const filename = imageFilename(savedCount, ref.src, dl.contentType);
     await writeFile(join(imagesOutDir, filename), dl.bytes);
-    let absoluteSrc = src;
-    try {
-      absoluteSrc = new URL(src, url).href;
-    } catch { /* keep original */ }
     images.push({
       filename,
       page: 1,
       width: 0,
       height: 0,
-      src: absoluteSrc,
-      alt,
+      src: ref.src,
+      alt: ref.alt,
     });
     savedCount += 1;
   }
 
-  // Prefer Readability's pre-cleaned plain-text. Fall back to walking
-  // the article HTML when textContent is missing (older Readability
-  // builds occasionally skipped it).
-  const rawText = (article as { textContent?: string }).textContent ??
-    ((articleDoc.body as Element | null)?.textContent ?? "") ??
-    ((articleDoc.documentElement as Element | null)?.textContent ?? "");
-  const text = rawText.replace(/\s+/g, " ").trim();
-
-  const result = {
-    title: article.title?.trim() || url,
-    content: text,
-    byline: article.byline ?? undefined,
-    excerpt: article.excerpt ?? undefined,
-    images,
-  };
   log.info("Readability extracted", {
     url,
-    title: result.title,
-    chars: text.length,
+    title: parsed.title,
+    chars: parsed.content.length,
     images: images.length,
   });
-  return result;
+
+  return {
+    title: parsed.title,
+    content: parsed.content,
+    byline: parsed.byline,
+    excerpt: parsed.excerpt,
+    images,
+  };
 }

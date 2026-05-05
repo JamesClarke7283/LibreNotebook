@@ -248,8 +248,10 @@ function StudioItemCard(
   const failed = item.status === "failed";
   const ago = relativeTime(item.createdAt);
   const menuOpen = useSignal(false);
+  const statusOpen = useSignal(false);
   const confirming = useSignal(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLDivElement>(null);
 
   // Close the menu when the user clicks/taps outside of it. We use a
   // capture-phase listener so we beat any inner `stopPropagation`.
@@ -266,13 +268,31 @@ function StudioItemCard(
     return () => document.removeEventListener("mousedown", onDocClick, true);
   }, [menuOpen.value]);
 
+  // Same outside-click dismiss for the status popover.
+  useEffect(() => {
+    if (!statusOpen.value) return;
+    function onDocClick(e: MouseEvent) {
+      if (!statusRef.current) return;
+      if (!statusRef.current.contains(e.target as Node)) {
+        statusOpen.value = false;
+      }
+    }
+    document.addEventListener("mousedown", onDocClick, true);
+    return () => document.removeEventListener("mousedown", onDocClick, true);
+  }, [statusOpen.value]);
+
   function onCardClick() {
-    if (item.status !== "ready") return;
-    globalThis.dispatchEvent(
-      new CustomEvent("librenotebook:open-studio-item", {
-        detail: { id: item.id },
-      }),
-    );
+    if (item.status === "ready") {
+      globalThis.dispatchEvent(
+        new CustomEvent("librenotebook:open-studio-item", {
+          detail: { id: item.id },
+        }),
+      );
+      return;
+    }
+    // Generating / failed cards open a small status popover instead
+    // of a full modal so the chat surface isn't disturbed.
+    statusOpen.value = !statusOpen.value;
   }
 
   function onMenuClick(e: Event) {
@@ -299,19 +319,18 @@ function StudioItemCard(
     `w-full flex items-center gap-3 rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-left ${
       item.status === "ready"
         ? "hover:border-zinc-600 hover:bg-zinc-800 cursor-pointer"
-        : generating
-        ? "opacity-95 cursor-default"
-        : "cursor-default"
+        : "hover:border-zinc-700 cursor-pointer"
     }`;
 
   return (
     <li class="relative group">
       <div
-        role={item.status === "ready" ? "button" : undefined}
-        tabIndex={item.status === "ready" ? 0 : -1}
+        role="button"
+        tabIndex={0}
         onClick={onCardClick}
         onKeyDown={(e) => {
-          if (item.status === "ready" && (e.key === "Enter" || e.key === " ")) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
             onCardClick();
           }
         }}
@@ -376,6 +395,49 @@ function StudioItemCard(
           >
             {confirming.value ? "Click again to confirm" : "Delete"}
           </button>
+        </div>
+      )}
+
+      {
+        /* Status popover for non-ready items: shows iteration progress
+          (or the failure reason) inline next to the card without
+          taking over the chat surface. */
+      }
+      {statusOpen.value && (generating || failed) && (
+        <div
+          ref={statusRef}
+          role="dialog"
+          aria-label={generating
+            ? "Generation in progress"
+            : "Generation failed"}
+          class="absolute right-0 left-0 top-full mt-1 z-20 rounded-md border border-zinc-700 bg-zinc-900 shadow-xl p-3 text-xs"
+        >
+          {generating
+            ? (
+              <>
+                <p class="text-zinc-200 font-medium mb-1">
+                  Generating in progress
+                </p>
+                <p class="text-zinc-400 leading-relaxed">
+                  Iteration {item.iteration ?? 1}{" "}
+                  of up to 7. The model decides when to stop — earlier passes
+                  commonly finish at iteration 3–5. Check the logs for live
+                  progress.
+                </p>
+              </>
+            )
+            : (
+              <>
+                <p class="text-red-300 font-medium mb-1">Generation failed</p>
+                <p class="text-zinc-400 leading-relaxed break-words">
+                  {item.error ?? "No error message recorded."}
+                </p>
+                <p class="text-zinc-500 mt-2">
+                  Click the Infographic tile to retry, or use the ⋮ menu to
+                  delete this item.
+                </p>
+              </>
+            )}
         </div>
       )}
     </li>

@@ -13,11 +13,7 @@
 
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-import type {
-  ChatMessage,
-  Citation,
-  SummaryStatus,
-} from "../lib/types.ts";
+import type { ChatMessage, Citation, SummaryStatus } from "../lib/types.ts";
 import {
   ArrowRightIcon,
   MoreVerticalIcon,
@@ -42,6 +38,12 @@ interface Props {
 type StreamEvent =
   | { type: "citations"; citations: Citation[] }
   | { type: "token"; text: string }
+  | {
+    type: "highlights";
+    ranges: Array<
+      { index: number; ranges: Array<{ start: number; end: number }> }
+    >;
+  }
   | { type: "done" }
   | { type: "error"; error: string };
 
@@ -192,6 +194,15 @@ export function ChatPanel(props: Props) {
             citations = evt.citations;
           } else if (evt.type === "token") {
             text += evt.text;
+          } else if (evt.type === "highlights") {
+            // Merge per-citation ranges into the citation list. The
+            // server emits this once after the full answer has streamed
+            // because span detection needs the assembled text.
+            const byIndex = new Map(evt.ranges.map((r) => [r.index, r.ranges]));
+            citations = citations.map((c) => ({
+              ...c,
+              ranges: byIndex.get(c.index) ?? c.ranges,
+            }));
           } else if (evt.type === "error") {
             text += `\n\n[error: ${evt.error}]`;
           }
@@ -256,13 +267,20 @@ export function ChatPanel(props: Props) {
             </p>
           </header>
 
-          {/* Auto-summary block (NotebookLM-style overview + 3 question pills). */}
+          {
+            /* Auto-summary block (NotebookLM-style overview + 3 question
+              pills). The example-question pills are hidden once the
+              user has sent at least one message — they're an empty-
+              state affordance, not part of the ongoing chat surface. */
+          }
           <SummaryBlock
             status={summaryStatus.value}
             summary={summary.value}
             error={summaryError.value}
             sourceCount={props.sourceCount}
-            suggestedQuestions={suggestedQuestions.value}
+            suggestedQuestions={messages.value.length === 0
+              ? suggestedQuestions.value
+              : []}
             onAskQuestion={sendDirect}
             onRetry={retrySummary}
           />
@@ -293,15 +311,15 @@ export function ChatPanel(props: Props) {
           <textarea
             placeholder="Start typing…"
             value={draft.value}
-            onInput={(e) =>
-              (draft.value = (e.currentTarget as HTMLTextAreaElement).value)}
+            onInput={(
+              e,
+            ) => (draft.value = (e.currentTarget as HTMLTextAreaElement).value)}
             onKeyDown={onKeyDown}
             rows={1}
             class="flex-1 bg-transparent text-sm text-zinc-100 outline-none resize-none max-h-40"
           />
           <span class="text-xs text-zinc-500">
-            {props.sourceCount}{" "}
-            {props.sourceCount === 1 ? "source" : "sources"}
+            {props.sourceCount} {props.sourceCount === 1 ? "source" : "sources"}
           </span>
           <button
             type="button"
@@ -322,8 +340,10 @@ export function ChatPanel(props: Props) {
         onClose={() => (openCitation.value = null)}
       />
 
-      {/* Customise-Infographic modal. Visibility flipped by the
-          librenotebook:studio-action event from StudioPanel. */}
+      {
+        /* Customise-Infographic modal. Visibility flipped by the
+          librenotebook:studio-action event from StudioPanel. */
+      }
       <InfographicModal
         notebookId={props.notebookId}
         open={infographicOpen.value}
@@ -343,7 +363,15 @@ export function ChatPanel(props: Props) {
 // ---------------------------------------------------------------------------
 
 function SummaryBlock(
-  { status, summary, error, sourceCount, suggestedQuestions, onAskQuestion, onRetry }: {
+  {
+    status,
+    summary,
+    error,
+    sourceCount,
+    suggestedQuestions,
+    onAskQuestion,
+    onRetry,
+  }: {
     status: SummaryStatus;
     summary: string | null;
     error: string | null;
@@ -468,13 +496,10 @@ function MessageBubble(
     onOpenCitation: (c: Citation) => void;
   },
 ) {
-  const userClass =
-    "bg-zinc-800/80 text-zinc-100 ml-auto max-w-[80%]";
+  const userClass = "bg-zinc-800/80 text-zinc-100 ml-auto max-w-[80%]";
   const aiClass =
     "bg-zinc-900 border border-zinc-800 text-zinc-200 mr-auto max-w-[90%]";
-  const segments = m.content
-    ? splitOutMermaidBlocks(m.content)
-    : [];
+  const segments = m.content ? splitOutMermaidBlocks(m.content) : [];
   return (
     <li class="flex">
       <div
@@ -569,10 +594,61 @@ function CitationBadge(
   const hover = useSignal(false);
   const wrapRef = useRef<HTMLSpanElement>(null);
 
-  // Trim chunk preview so the popover stays compact.
-  const preview = citation.content.length > 360
-    ? citation.content.slice(0, 360).trimEnd() + "…"
-    : citation.content;
+  // Build the popover preview. If the server attached span ranges
+  // (the assistant quoted verbatim), highlight just those spans with
+  // a tiny bit of surrounding context — gives the user a focused
+  // pointer to the relevant sentences instead of dumping the full
+  // chunk. When ranges are absent, fall back to the old 360-char
+  // truncated chunk preview.
+  const preview = (() => {
+    const ranges = (citation.ranges ?? []).slice().sort((a, b) =>
+      a.start - b.start
+    );
+    if (ranges.length === 0) {
+      return citation.content.length > 360
+        ? citation.content.slice(0, 360).trimEnd() + "…"
+        : citation.content;
+    }
+    const PAD = 40;
+    const out: preact.JSX.Element[] = [];
+    let cursor = 0;
+    ranges.forEach((r, i) => {
+      const start = Math.max(0, r.start);
+      const end = Math.min(citation.content.length, r.end);
+      const sliceStart = Math.max(cursor, start - PAD);
+      if (sliceStart > cursor) {
+        // Gap between the previous span and this one — show an ellipsis.
+        if (i > 0) out.push(<span key={`g${i}`}>…</span>);
+      }
+      if (start > sliceStart) {
+        out.push(
+          <span key={`ctx${i}`}>
+            {citation.content.slice(sliceStart, start)}
+          </span>,
+        );
+      }
+      out.push(
+        <mark
+          key={`hl${i}`}
+          class="bg-emerald-400/40 text-emerald-50 px-0.5 rounded font-medium"
+        >
+          {citation.content.slice(start, end)}
+        </mark>,
+      );
+      cursor = end;
+    });
+    // Tail context after the last span.
+    const tailEnd = Math.min(citation.content.length, cursor + PAD);
+    if (tailEnd > cursor) {
+      out.push(
+        <span key="tail">{citation.content.slice(cursor, tailEnd)}</span>,
+      );
+      if (tailEnd < citation.content.length) {
+        out.push(<span key="ellipsis">…</span>);
+      }
+    }
+    return <>{out}</>;
+  })();
 
   return (
     <span class="relative inline-block align-baseline" ref={wrapRef}>

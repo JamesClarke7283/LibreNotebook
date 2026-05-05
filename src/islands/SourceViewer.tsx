@@ -29,9 +29,9 @@ export function SourceViewer({ notebookId, citation, onClose }: Props) {
         return await res.json() as NotebookSource;
       })
       .then((s) => (source.value = s))
-      .catch((err) =>
-        (error.value = err instanceof Error ? err.message : String(err))
-      )
+      .catch((
+        err,
+      ) => (error.value = err instanceof Error ? err.message : String(err)))
       .finally(() => (loading.value = false));
   }, [citation?.sourceId, citation?.index]);
 
@@ -87,15 +87,16 @@ export function SourceViewer({ notebookId, citation, onClose }: Props) {
 
         <div class="flex-1 overflow-y-auto scroll-thin px-5 py-4">
           {loading.value && (
-            <p class="text-sm text-zinc-400">Loading source…</p>
+            <p class="text-sm text-zinc-400">
+              Loading source…
+            </p>
           )}
-          {error.value && (
-            <p class="text-sm text-red-400">{error.value}</p>
-          )}
+          {error.value && <p class="text-sm text-red-400">{error.value}</p>}
           {source.value && (
             <HighlightedContent
               fullText={source.value.content}
               chunk={citation.content}
+              ranges={citation.ranges}
             />
           )}
         </div>
@@ -109,17 +110,24 @@ export function SourceViewer({ notebookId, citation, onClose }: Props) {
 }
 
 /**
- * Render `fullText` with the substring matching `chunk` wrapped in a
- * highlighted <mark>. Falls back to a yellow callout block if the chunk
- * can't be located verbatim (e.g. whitespace differences).
+ * Render `fullText` with multi-span highlighting. The cited chunk is
+ * shown with a soft outer highlight; sentences within the chunk that
+ * the assistant's answer quoted verbatim get a stronger inner
+ * highlight. Falls back to whole-chunk highlighting when ranges are
+ * absent (older messages, fully paraphrased answers).
  */
 function HighlightedContent(
-  { fullText, chunk }: { fullText: string; chunk: string },
+  { fullText, chunk, ranges }: {
+    fullText: string;
+    chunk: string;
+    ranges?: Array<{ start: number; end: number }>;
+  },
 ) {
-  const idx = locateChunk(fullText, chunk);
-  if (idx < 0) {
+  const chunkStart = locateChunk(fullText, chunk);
+  if (chunkStart < 0) {
     // Couldn't locate the chunk in the source — show the chunk on its
-    // own at the top, then the full source below.
+    // own at the top (with inner highlights), then the full source
+    // below for context.
     return (
       <div class="space-y-4">
         <div class="rounded-lg bg-emerald-950/40 border border-emerald-800/50 p-3">
@@ -127,7 +135,9 @@ function HighlightedContent(
             Cited chunk
           </p>
           <p class="text-sm text-emerald-100 whitespace-pre-wrap leading-relaxed">
-            {chunk}
+            {ranges && ranges.length > 0
+              ? renderWithInnerHighlights(chunk, ranges, "inner-strong")
+              : chunk}
           </p>
         </div>
         <div>
@@ -141,29 +151,76 @@ function HighlightedContent(
       </div>
     );
   }
-  const before = fullText.slice(0, idx);
-  const match = fullText.slice(idx, idx + chunk.length);
-  const after = fullText.slice(idx + chunk.length);
+
+  // Scroll the first highlight (or the chunk) into view.
+  const scrollToFirst = (el: HTMLElement | null) => {
+    if (el) {
+      queueMicrotask(() => {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }
+  };
+
+  const before = fullText.slice(0, chunkStart);
+  const chunkText = fullText.slice(chunkStart, chunkStart + chunk.length);
+  const after = fullText.slice(chunkStart + chunk.length);
+
+  // If we have inner ranges, render the chunk with strong inner marks
+  // wrapped in a softer outer mark to keep the chunk visible. If not,
+  // mark the whole chunk strongly (same look as the old single-mark).
+  const innerHighlighted = ranges && ranges.length > 0
+    ? renderWithInnerHighlights(chunkText, ranges, "inner-strong")
+    : chunkText;
+
   return (
     <p class="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
       {before}
       <mark
         id="cited-chunk"
-        ref={(el) => {
-          // Scroll the highlight into view on mount.
-          if (el) {
-            queueMicrotask(() => {
-              el.scrollIntoView({ block: "center", behavior: "smooth" });
-            });
-          }
-        }}
-        class="bg-emerald-900/70 text-emerald-100 px-1 rounded"
+        ref={scrollToFirst}
+        class={ranges && ranges.length > 0
+          ? "bg-emerald-900/30 text-emerald-100 px-0.5 rounded"
+          : "bg-emerald-900/70 text-emerald-100 px-1 rounded"}
       >
-        {match}
+        {innerHighlighted}
       </mark>
       {after}
     </p>
   );
+}
+
+/** Render `text` with multiple `<mark>` regions at the given byte
+ *  ranges. Ranges are assumed sorted and non-overlapping (the
+ *  server-side extractor merges adjacent ones already). */
+function renderWithInnerHighlights(
+  text: string,
+  ranges: Array<{ start: number; end: number }>,
+  variant: "inner-strong" | "inner-soft",
+): preact.JSX.Element[] {
+  const cls = variant === "inner-strong"
+    ? "bg-emerald-400/40 text-emerald-50 px-0.5 rounded font-medium"
+    : "bg-emerald-700/40 text-emerald-100 px-0.5 rounded";
+  const out: preact.JSX.Element[] = [];
+  let cursor = 0;
+  ranges.forEach((r, i) => {
+    const start = Math.max(0, Math.min(text.length, r.start));
+    const end = Math.max(start, Math.min(text.length, r.end));
+    if (start > cursor) {
+      out.push(<span key={`pre-${i}`}>{text.slice(cursor, start)}</span>);
+    }
+    if (end > start) {
+      out.push(
+        <mark key={`hl-${i}`} class={cls}>
+          {text.slice(start, end)}
+        </mark>,
+      );
+    }
+    cursor = end;
+  });
+  if (cursor < text.length) {
+    out.push(<span key="tail">{text.slice(cursor)}</span>);
+  }
+  return out;
 }
 
 /**
