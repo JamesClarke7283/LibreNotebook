@@ -115,6 +115,26 @@ async function killOwners(): Promise<number> {
   return killed;
 }
 
+// Wipe Vite's pre-bundle cache (NOT node_modules/.deno — that one
+// is the real source-of-truth tree, see header). The .vite/ folder
+// is regenerated on every dev start; clearing it forces the new
+// optimizeDeps/dedupe config to take effect, which we discovered
+// the hard way during the v0.2.8 click-regression fix when stale
+// pre-bundles kept ghost-signal state alive across config changes.
+// Cheap (~few hundred ms re-bundle on next start) and avoids the
+// "did you remember to rm -rf .vite?" footgun.
+try {
+  await Deno.remove("node_modules/.vite", { recursive: true });
+} catch (err) {
+  if (!(err instanceof Deno.errors.NotFound)) {
+    console.error(
+      `free-port: couldn't remove node_modules/.vite (${
+        err instanceof Error ? err.message : String(err)
+      }); continuing anyway`,
+    );
+  }
+}
+
 if (!(await probe())) {
   // Port is free — nothing to do.
   Deno.exit(0);

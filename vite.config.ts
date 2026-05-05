@@ -26,107 +26,35 @@ export default defineConfig({
   // we don't need. Pointing the import at a tiny empty shim lets the
   // bundler succeed without affecting runtime behaviour.
   //
-  // The preact/* and @prefresh/* aliases are NOT cosmetic — they
-  // route those imports to absolute paths in node_modules/<pkg>/
-  // BEFORE the plugin chain sees the bare specifier, so
-  // `@deno/loader@0.4.0` (the Vite plugin from @fresh/plugin-vite)
-  // never gets to resolve them to its `node_modules/.deno/<pkg>@<ver>/...`
-  // hierarchy. That hierarchy's load step appends Vite's `?v=<hash>`
-  // cache-bust query directly to the file path passed to `open()`,
-  // which the OS rejects with ENOENT (the file exists, the suffix
-  // doesn't). optimizeDeps.include alone wasn't enough to win
-  // against @deno/loader — these aliases force the issue.
+  // History note: v0.2.5–v0.2.7 attempted to alias every preact-family
+  // and @prefresh package to absolute file paths to dodge @deno/loader.
+  // That broke notebook tile clicks: islands ended up loading two
+  // copies of preact/@preact/signals (one through the alias, one
+  // through @deno/loader for paths the alias regex didn't catch),
+  // producing ghost-signal state that never updated. Reverted in
+  // v0.2.8 — `resolve.dedupe` below + `optimizeDeps.include` get us
+  // single-instance loading without playing whack-a-mole with import
+  // paths.
   resolve: {
-    // Use array-form aliases: object-form does PARTIAL prefix matching,
-    // which produced bogus paths like
-    //   <preact-module>/devtools
-    // when `preact/debug` itself imported `preact/devtools` and the
-    // bare-`preact` alias's replacement got prefixed onto `/devtools`.
-    // Each entry below uses `/^…$/` regex for exact match — the
-    // shorter prefixes can't bleed into longer specifiers.
-    alias: [
-      {
-        find: "node:module",
-        replacement: new URL("./src/shims/node-module.ts", import.meta.url)
-          .pathname,
-      },
-      // Preact: browser-conditional .module.js builds (the same files
-      // Vite would resolve via the package's "browser" exports).
-      // Listed exact-matched so `preact` doesn't catch `preact/foo`.
-      {
-        find: /^preact$/,
-        replacement: new URL(
-          "./node_modules/preact/dist/preact.module.js",
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^preact\/jsx-runtime$/,
-        replacement: new URL(
-          "./node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^preact\/hooks$/,
-        replacement: new URL(
-          "./node_modules/preact/hooks/dist/hooks.module.js",
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^preact\/debug$/,
-        replacement: new URL(
-          "./node_modules/preact/debug/dist/debug.module.js",
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^preact\/devtools$/,
-        replacement: new URL(
-          "./node_modules/preact/devtools/dist/devtools.module.js",
-          import.meta.url,
-        ).pathname,
-      },
-      // Prefresh: source ESM files (no dist build for @prefresh/core).
-      {
-        find: /^@prefresh\/core$/,
-        replacement: new URL(
-          "./node_modules/@prefresh/core/src/index.js",
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^@prefresh\/utils$/,
-        replacement: new URL(
-          "./node_modules/@prefresh/utils/src/index.js",
-          import.meta.url,
-        ).pathname,
-      },
-      // @preact/signals + @preact/signals-core: islands rely on
-      // these for `useSignal`. Without these aliases @deno/loader
-      // resolves them to `.deno/@preact+signals@2.9.0/...?v=hash`
-      // and the ?v= suffix ENOENTs. Worse, the failing path was
-      // landing TWO copies of the signals module on the page —
-      // signal mutations in one copy didn't sync to components
-      // reading from the other → "dead" tile clicks (the click
-      // gate checks `renaming.value`/`menuOpen.value` against a
-      // ghost copy that never updated). Browser-conditional
-      // `dist/<name>.module.js` entries per each package.json.
-      {
-        find: /^@preact\/signals$/,
-        replacement: new URL(
-          "./node_modules/@preact/signals/dist/signals.module.js",
-          import.meta.url,
-        ).pathname,
-      },
-      {
-        find: /^@preact\/signals-core$/,
-        replacement: new URL(
-          "./node_modules/@preact/signals-core/dist/signals-core.module.js",
-          import.meta.url,
-        ).pathname,
-      },
+    alias: {
+      "node:module": new URL("./src/shims/node-module.ts", import.meta.url)
+        .pathname,
+    },
+    // Force a single copy of each of these packages across SSR + the
+    // client bundle. This is the actual fix for "two preacts on the
+    // page" — even when @deno/loader resolves a specifier to one
+    // path and Vite's optimizer to another, dedupe collapses them to
+    // a single module instance so signals/hooks share one store.
+    dedupe: [
+      "preact",
+      "preact/hooks",
+      "preact/jsx-runtime",
+      "preact/debug",
+      "preact/devtools",
+      "@preact/signals",
+      "@preact/signals-core",
+      "@prefresh/core",
+      "@prefresh/utils",
     ],
   },
   optimizeDeps: {
@@ -160,8 +88,12 @@ export default defineConfig({
       "preact",
       "preact/hooks",
       "preact/debug",
+      "preact/devtools",
       "preact/jsx-runtime",
       "@preact/signals",
+      "@preact/signals-core",
+      "@prefresh/core",
+      "@prefresh/utils",
     ],
   },
   ssr: {
