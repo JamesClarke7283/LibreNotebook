@@ -32,15 +32,39 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // Force Vite's dev-mode pre-bundler (esbuild) to flatten mermaid
-    // into a single file. mermaid v11's main entry
-    // (dist/mermaid.core.mjs) fans out into ./chunks/* re-exports
-    // that the browser-side ESM linker chokes on with:
-    //   "Importing binding name 'default' cannot be resolved by
-    //    star export entries"
-    // Pre-bundling collapses those chunks so the browser sees a
-    // single ESM module with a proper `default` export.
-    include: ["mermaid", "mermaid/dist/mermaid.esm.min.mjs"],
+    // Force Vite's dev-mode pre-bundler (esbuild) to handle these
+    // packages directly so requests for them never fall through to
+    // @deno/loader. The loader has two pathological behaviours we
+    // route around here:
+    //
+    //   1. mermaid v11's main entry (dist/mermaid.core.mjs) fans out
+    //      into ./chunks/* re-exports that the browser-side ESM
+    //      linker chokes on with:
+    //        "Importing binding name 'default' cannot be resolved by
+    //         star export entries"
+    //      Pre-bundling collapses those chunks into a single ESM
+    //      with a proper default export.
+    //
+    //   2. For preact-family packages, @deno/loader resolves them to
+    //      node_modules/.deno/<pkg>@<ver>/... but then hands the
+    //      whole URL — including Vite's `?v=<hash>` cache-bust query
+    //      — straight to the OS `open()` syscall, which returns
+    //      ENOENT (the file exists but the query suffix doesn't).
+    //      Pre-bundling means the request is served from
+    //      node_modules/.vite/deps/ with Vite's own cache layer
+    //      where ?v= queries are understood.
+    //
+    // After bumping this list, run `rm -rf node_modules/.vite` once
+    // so the next dev start picks up the new pre-bundle entry.
+    include: [
+      "mermaid",
+      "mermaid/dist/mermaid.esm.min.mjs",
+      "preact",
+      "preact/hooks",
+      "preact/debug",
+      "preact/jsx-runtime",
+      "@preact/signals",
+    ],
   },
   ssr: {
     // langchain ships dual ESM/CJS builds. Vite's SSR module-runner picks
