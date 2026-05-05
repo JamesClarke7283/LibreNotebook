@@ -195,7 +195,10 @@ function NotebookCard({ nb, onRenamed, onDeleted }: CardProps) {
   const renaming = useSignal(false);
   const draftTitle = useSignal(nb.title);
   const error = useSignal<string | null>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  // The card itself is now an <a href> so the browser can navigate
+  // even if island hydration hasn't run yet (broken @deno/loader,
+  // network blip, slow CPU). The ref is typed accordingly.
+  const wrapRef = useRef<HTMLAnchorElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Close popover on outside click.
@@ -300,21 +303,35 @@ function NotebookCard({ nb, onRenamed, onDeleted }: CardProps) {
     year: "numeric",
   });
 
-  // Wrap in a div (not <a>) so the inline rename input doesn't try to
-  // navigate. Card-level click delegates to navigation when not renaming
-  // and the popover isn't open.
+  // Tile is an <a href> so the browser navigates natively on click —
+  // works without ANY JavaScript hydration. JS becomes progressive
+  // enhancement (3-dot menu, rename, delete). When hydrated, the
+  // onClick below preventDefaults navigation in the special cases:
+  //   - renaming: don't navigate while the inline-edit input is open
+  //   - menuOpen: clicking inside the open popover shouldn't navigate
+  //   - the user clicked a button or input inside the card (e.g. the
+  //     ⋮ menu button or the rename input itself)
+  // Middle-click and Cmd/Ctrl+click open the notebook in a new tab —
+  // a native browser feature we get for free by using <a href>.
   function onCardClick(e: MouseEvent) {
-    if (renaming.value || menuOpen.value) return;
-    const target = e.target as HTMLElement;
-    if (target.closest("button, input")) return;
-    globalThis.location.href = `/notebooks/${nb.id}`;
+    if (renaming.value || menuOpen.value) {
+      e.preventDefault();
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button, input")) {
+      e.preventDefault();
+      return;
+    }
+    // Otherwise: let the browser follow the href. Don't preventDefault.
   }
 
   return (
-    <div
+    <a
       ref={wrapRef}
+      href={`/notebooks/${nb.id}`}
       onClick={onCardClick}
-      class="relative block rounded-2xl bg-zinc-800/60 border border-zinc-800 hover:border-zinc-600 transition aspect-[3/2.4] p-5 flex flex-col text-zinc-100 cursor-pointer"
+      class="relative block rounded-2xl bg-zinc-800/60 border border-zinc-800 hover:border-zinc-600 transition aspect-[3/2.4] p-5 flex flex-col text-zinc-100 no-underline"
     >
       <div class="flex items-start justify-between">
         <FileIcon size={22} class="text-zinc-300" />
@@ -361,8 +378,10 @@ function NotebookCard({ nb, onRenamed, onDeleted }: CardProps) {
             <input
               ref={inputRef}
               value={draftTitle.value}
-              onInput={(e) =>
-                (draftTitle.value = (e.currentTarget as HTMLInputElement).value)}
+              onInput={(
+                e,
+              ) => (draftTitle.value =
+                (e.currentTarget as HTMLInputElement).value)}
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -390,6 +409,6 @@ function NotebookCard({ nb, onRenamed, onDeleted }: CardProps) {
           {nb.sourceCount === 1 ? "source" : "sources"}
         </p>
       </div>
-    </div>
+    </a>
   );
 }
