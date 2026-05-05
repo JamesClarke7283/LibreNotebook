@@ -228,3 +228,25 @@ export const NoteIcon = (p: IconProps) => (
     <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
   </svg>
 );
+
+export const ChevronLeftIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <polyline points="15 18 9 12 15 6" />
+  </svg>
+);
+
+export const ChevronRightIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
+/** Circular arrow — used by the chat "Retry" button to regenerate
+ *  the assistant's last reply. */
+export const RefreshIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <polyline points="23 4 23 10 17 10" />
+    <polyline points="1 20 1 14 7 14" />
+    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+  </svg>
+);

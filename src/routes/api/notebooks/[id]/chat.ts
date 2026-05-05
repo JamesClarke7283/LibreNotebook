@@ -30,31 +30,79 @@ export const handler = define.handlers({
       return new Response("Notebook not found", { status: 404 });
     }
 
-    let body: { message?: unknown };
+    let body: { message?: unknown; replyToId?: unknown };
     try {
       body = await ctx.req.json();
     } catch {
       log.debug("chat POST refused: invalid JSON", { notebookId });
       return new Response("Invalid JSON", { status: 400 });
     }
-    const message = typeof body.message === "string" ? body.message.trim() : "";
-    if (!message) {
-      log.debug("chat POST refused: empty message", { notebookId });
-      return new Response("Empty message", { status: 400 });
-    }
 
-    log.debug("chat POST accepted", { notebookId, length: message.length });
+    // Two modes:
+    //   1. Normal send — body has `message`. We persist a new user
+    //      message and an assistant message replying to it.
+    //   2. Retry — body has `replyToId` pointing at an EXISTING user
+    //      message. We DON'T persist a new user message; we just
+    //      generate another assistant reply linked to the same
+    //      `replyToId`. The UI groups all assistants sharing a
+    //      `replyToId` and lets the user page through them.
+    const retryReplyToId = typeof body.replyToId === "string"
+      ? body.replyToId
+      : null;
+    const inboundMessage = typeof body.message === "string"
+      ? body.message.trim()
+      : "";
+
     const history = await listMessages(notebookId);
-    await addMessage({ notebookId, role: "user", content: message });
+
+    let userMsgId: string;
+    let messageText: string;
+
+    if (retryReplyToId) {
+      const target = history.find(
+        (m) => m.id === retryReplyToId && m.role === "user",
+      );
+      if (!target) {
+        log.debug("chat POST refused: retry target not found", {
+          notebookId,
+          replyToId: retryReplyToId,
+        });
+        return new Response("Retry target not found", { status: 404 });
+      }
+      userMsgId = target.id;
+      messageText = target.content;
+      log.debug("chat POST accepted (retry)", {
+        notebookId,
+        replyToId: userMsgId,
+        length: messageText.length,
+      });
+    } else {
+      if (!inboundMessage) {
+        log.debug("chat POST refused: empty message", { notebookId });
+        return new Response("Empty message", { status: 400 });
+      }
+      log.debug("chat POST accepted", {
+        notebookId,
+        length: inboundMessage.length,
+      });
+      const userMsg = await addMessage({
+        notebookId,
+        role: "user",
+        content: inboundMessage,
+      });
+      userMsgId = userMsg.id;
+      messageText = inboundMessage;
+    }
 
     const handle = await streamRagAnswer(
       settings,
       notebookId,
       history,
-      message,
+      messageText,
     );
     log.debug("chat stream opened", {
       notebookId,
+      replyToId: userMsgId,
       citations: handle.citations.length,
     });
 
@@ -69,7 +117,6 @@ export const handler = define.handlers({
         const reader = forSave.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        // deno-lint-ignore no-constant-condition
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -97,6 +144,9 @@ export const handler = define.handlers({
             role: "assistant",
             content: text,
             citations: citations.length > 0 ? citations : undefined,
+            // Link the assistant reply to the user message it answers,
+            // so the UI can group alternative retries together.
+            replyToId: userMsgId,
           });
         }
       } catch {

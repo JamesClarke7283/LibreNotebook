@@ -16,7 +16,10 @@ import { useSignal } from "@preact/signals";
 import type { ChatMessage, Citation, SummaryStatus } from "../lib/types.ts";
 import {
   ArrowRightIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   MoreVerticalIcon,
+  RefreshIcon,
   SparklesIcon,
 } from "../components/Icons.tsx";
 import { SourceViewer } from "./SourceViewer.tsx";
@@ -56,6 +59,12 @@ export function ChatPanel(props: Props) {
   const streaming = useSignal(false);
   const openCitation = useSignal<Citation | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  // Per-user-message selected-alternative index. Each user message
+  // can have multiple assistant replies (the original + any number
+  // of Retry-generated alternatives); this signal tracks which one
+  // is currently visible. Defaults to "last" (newest alternative)
+  // when the user clicks Retry. Keyed by user-message id.
+  const selectedAlt = useSignal<Record<string, number>>({});
 
   // Notebook summary state.
   const summary = useSignal<string | null>(props.initialSummary);
@@ -139,46 +148,21 @@ export function ChatPanel(props: Props) {
     void send();
   }
 
-  async function send() {
-    const q = draft.value.trim();
-    clientLog.debug("chat send invoked", {
-      length: q.length,
-      streaming: streaming.value,
-      notebookId: props.notebookId,
-    });
-    if (!q || streaming.value) {
-      clientLog.debug("chat send no-op", {
-        reason: !q ? "empty" : "already streaming",
-      });
-      return;
-    }
-    streaming.value = true;
-    draft.value = "";
-
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      notebookId: props.notebookId,
-      role: "user",
-      content: q,
-      createdAt: new Date().toISOString(),
-    };
-    const placeholder: ChatMessage = {
-      id: crypto.randomUUID(),
-      notebookId: props.notebookId,
-      role: "assistant",
-      content: "",
-      citations: [],
-      createdAt: new Date().toISOString(),
-    };
-    messages.value = [...messages.value, userMsg, placeholder];
-    scrollToBottom();
-
+  /** Stream a server reply into a pre-existing assistant placeholder.
+   *  Used by both the normal `send()` path and the `retry()` path. */
+  async function streamReply(
+    placeholderId: string,
+    payload: { message?: string; replyToId?: string },
+  ): Promise<void> {
     try {
-      clientLog.debug("chat fetch start", { notebookId: props.notebookId });
+      clientLog.debug("chat fetch start", {
+        notebookId: props.notebookId,
+        retry: !!payload.replyToId,
+      });
       const res = await fetch(`/api/notebooks/${props.notebookId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: q }),
+        body: JSON.stringify(payload),
       });
       clientLog.debug("chat fetch response", {
         status: res.status,
@@ -193,7 +177,6 @@ export function ChatPanel(props: Props) {
       let buffer = "";
       let text = "";
       let citations: Citation[] = [];
-      // deno-lint-ignore no-constant-condition
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -226,21 +209,99 @@ export function ChatPanel(props: Props) {
             text += `\n\n[error: ${evt.error}]`;
           }
           messages.value = messages.value.map((m) =>
-            m.id === placeholder.id ? { ...m, content: text, citations } : m
+            m.id === placeholderId ? { ...m, content: text, citations } : m
           );
           scrollToBottom();
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      clientLog.error("chat send failed", { error: msg });
+      clientLog.error("chat stream failed", { error: msg });
       messages.value = messages.value.map((m) =>
-        m.id === placeholder.id ? { ...m, content: `[error: ${msg}]` } : m
+        m.id === placeholderId ? { ...m, content: `[error: ${msg}]` } : m
       );
-    } finally {
-      clientLog.debug("chat send done", { messages: messages.value.length });
-      streaming.value = false;
     }
+  }
+
+  async function send() {
+    const q = draft.value.trim();
+    clientLog.debug("chat send invoked", {
+      length: q.length,
+      streaming: streaming.value,
+      notebookId: props.notebookId,
+    });
+    if (!q || streaming.value) {
+      clientLog.debug("chat send no-op", {
+        reason: !q ? "empty" : "already streaming",
+      });
+      return;
+    }
+    streaming.value = true;
+    draft.value = "";
+
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      notebookId: props.notebookId,
+      role: "user",
+      content: q,
+      createdAt: new Date().toISOString(),
+    };
+    const placeholder: ChatMessage = {
+      id: crypto.randomUUID(),
+      notebookId: props.notebookId,
+      role: "assistant",
+      content: "",
+      citations: [],
+      createdAt: new Date().toISOString(),
+      // Link placeholder back to its user message so the alternative-
+      // pager grouping logic recognises this assistant as belonging to
+      // the new prompt while it's still streaming.
+      replyToId: userMsg.id,
+    };
+    messages.value = [...messages.value, userMsg, placeholder];
+    scrollToBottom();
+
+    await streamReply(placeholder.id, { message: q });
+    clientLog.debug("chat send done", { messages: messages.value.length });
+    streaming.value = false;
+  }
+
+  /** Generate another alternative response for the same user prompt.
+   *  Appends a new placeholder assistant message linked to `userMsgId`,
+   *  selects it as the visible alternative, then streams the reply
+   *  into it. */
+  async function retry(userMsgId: string): Promise<void> {
+    if (streaming.value) {
+      clientLog.debug("chat retry no-op (already streaming)", { userMsgId });
+      return;
+    }
+    clientLog.debug("chat retry invoked", { userMsgId });
+    streaming.value = true;
+    const placeholder: ChatMessage = {
+      id: crypto.randomUUID(),
+      notebookId: props.notebookId,
+      role: "assistant",
+      content: "",
+      citations: [],
+      createdAt: new Date().toISOString(),
+      replyToId: userMsgId,
+    };
+    messages.value = [...messages.value, placeholder];
+    // Snap the pager to the new alternative immediately. The grouping
+    // logic counts current alternatives for this userMsgId; the new
+    // placeholder is the last one, so its index is `count - 1`.
+    const altCount = messages.value.filter(
+      (m) => m.role === "assistant" && m.replyToId === userMsgId,
+    ).length;
+    selectedAlt.value = {
+      ...selectedAlt.value,
+      [userMsgId]: altCount - 1,
+    };
+    scrollToBottom();
+
+    await streamReply(placeholder.id, { replyToId: userMsgId });
+    clientLog.debug("chat retry done", { userMsgId });
+    streaming.value = false;
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -258,6 +319,7 @@ export function ChatPanel(props: Props) {
       <header class="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
         <h2 class="text-zinc-100 font-medium">Chat</h2>
         <button
+          type="button"
           class="p-1.5 rounded hover:bg-zinc-800 text-zinc-400"
           aria-label="More"
         >
@@ -318,13 +380,38 @@ export function ChatPanel(props: Props) {
 
           {messages.value.length > 0 && (
             <ul class="space-y-4 mt-4">
-              {messages.value.map((m) => (
-                <MessageBubble
-                  key={m.id}
-                  m={m}
-                  onOpenCitation={(c) => (openCitation.value = c)}
-                />
-              ))}
+              {groupMessages(messages.value).map((g) =>
+                g.userMsg
+                  ? (
+                    <MessageGroup
+                      key={g.userMsg.id}
+                      group={g}
+                      selectedIndex={selectedAlt.value[g.userMsg.id] ??
+                        g.assistants.length - 1}
+                      onSelect={(idx) => {
+                        selectedAlt.value = {
+                          ...selectedAlt.value,
+                          [g.userMsg!.id]: idx,
+                        };
+                      }}
+                      onRetry={() => retry(g.userMsg!.id)}
+                      streaming={streaming.value}
+                      onOpenCitation={(c) => (openCitation.value = c)}
+                    />
+                  )
+                  : (
+                    // Orphan assistants (e.g. the infographic finalisation
+                    // result that gets pushed without a paired user
+                    // message) — render as plain bubbles, no pager.
+                    g.assistants.map((m) => (
+                      <MessageBubble
+                        key={m.id}
+                        m={m}
+                        onOpenCitation={(c) => (openCitation.value = c)}
+                      />
+                    ))
+                  )
+              )}
             </ul>
           )}
         </div>
@@ -554,6 +641,183 @@ function MessageBubble(
           : <span class="opacity-60 inline-block animate-pulse">…</span>}
       </div>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Grouping: each user prompt + all its alternative assistant replies
+// ---------------------------------------------------------------------------
+
+/** A user message and every assistant reply linked to it via
+ *  `replyToId` (or paired positionally for legacy messages stored
+ *  before `replyToId` existed). `userMsg` is `null` only for orphan
+ *  assistants — e.g. the auto-rendered infographic that gets pushed
+ *  to `messages` without a matching user prompt. */
+interface MessageGroup {
+  userMsg: ChatMessage | null;
+  assistants: ChatMessage[];
+}
+
+function groupMessages(msgs: ChatMessage[]): MessageGroup[] {
+  const groups: MessageGroup[] = [];
+  let current: MessageGroup | null = null;
+  for (const m of msgs) {
+    if (m.role === "user") {
+      current = { userMsg: m, assistants: [] };
+      groups.push(current);
+      continue;
+    }
+    // Assistant. Try to find the linked group via replyToId; fall back
+    // to the most recent group (positional pairing for legacy data).
+    let target: MessageGroup | null = null;
+    if (m.replyToId) {
+      target = groups.find((g) => g.userMsg?.id === m.replyToId) ?? null;
+    }
+    if (!target) target = current;
+    if (!target) {
+      // No prior user message at all — render as an orphan group.
+      groups.push({ userMsg: null, assistants: [m] });
+    } else {
+      target.assistants.push(m);
+    }
+  }
+  return groups;
+}
+
+function MessageGroup(
+  { group, selectedIndex, onSelect, onRetry, streaming, onOpenCitation }: {
+    group: MessageGroup;
+    selectedIndex: number;
+    onSelect: (idx: number) => void;
+    onRetry: () => void;
+    streaming: boolean;
+    onOpenCitation: (c: Citation) => void;
+  },
+) {
+  if (!group.userMsg) {
+    // Defensive fallback — handled at the call site too.
+    return (
+      <>
+        {group.assistants.map((m) => (
+          <MessageBubble key={m.id} m={m} onOpenCitation={onOpenCitation} />
+        ))}
+      </>
+    );
+  }
+  const total = group.assistants.length;
+  // Clamp the selection so a stale index from a previous render doesn't
+  // crash if `messages` shrinks (e.g. we ever add delete-message).
+  const idx = Math.max(0, Math.min(selectedIndex, total - 1));
+  const visible = total > 0 ? group.assistants[idx] : null;
+  return (
+    <>
+      <MessageBubble m={group.userMsg} onOpenCitation={onOpenCitation} />
+      {visible && (
+        <li class="flex flex-col items-start gap-1 max-w-[90%] mr-auto">
+          <MessageBubbleBody m={visible} onOpenCitation={onOpenCitation} />
+          <AssistantToolbar
+            currentIndex={idx}
+            total={total}
+            onPrev={() => onSelect(Math.max(0, idx - 1))}
+            onNext={() => onSelect(Math.min(total - 1, idx + 1))}
+            onRetry={onRetry}
+            // Disable retry while a stream is in flight so users
+            // don't trigger a second concurrent generation that the
+            // server can't currently fan out.
+            retryDisabled={streaming || !visible.content}
+          />
+        </li>
+      )}
+    </>
+  );
+}
+
+/** The assistant-message bubble rendered inside a group (without the
+ *  outer `<li>`, so the group can stack the toolbar underneath it
+ *  inside its own `<li>` flow). */
+function MessageBubbleBody(
+  { m, onOpenCitation }: {
+    m: ChatMessage;
+    onOpenCitation: (c: Citation) => void;
+  },
+) {
+  const aiClass =
+    "bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap max-w-full";
+  const segments = m.content ? splitOutMermaidBlocks(m.content) : [];
+  return (
+    <div class={aiClass}>
+      {m.content
+        ? segments.map((seg, idx) =>
+          seg.kind === "mermaid"
+            ? <MermaidView key={`mer${idx}`} code={seg.text} />
+            : (
+              <span key={`txt${idx}`}>
+                {renderWithCitations(
+                  seg.text,
+                  m.citations ?? [],
+                  onOpenCitation,
+                )}
+              </span>
+            )
+        )
+        : <span class="opacity-60 inline-block animate-pulse">…</span>}
+    </div>
+  );
+}
+
+/** Toolbar shown UNDER each assistant bubble: a `< 1 / N >` pager (only
+ *  visible when the user has retried at least once) and a Retry button
+ *  that always regenerates a fresh alternative. */
+function AssistantToolbar(
+  { currentIndex, total, onPrev, onNext, onRetry, retryDisabled }: {
+    currentIndex: number;
+    total: number;
+    onPrev: () => void;
+    onNext: () => void;
+    onRetry: () => void;
+    retryDisabled: boolean;
+  },
+) {
+  const hasAlternatives = total > 1;
+  return (
+    <div class="flex items-center gap-2 mt-1 ml-1 text-zinc-500">
+      {hasAlternatives && (
+        <div class="inline-flex items-center gap-1 text-[11px]">
+          <button
+            type="button"
+            onClick={onPrev}
+            disabled={currentIndex <= 0}
+            aria-label="Previous response"
+            class="p-1 rounded hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-500 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+          >
+            <ChevronLeftIcon size={12} />
+          </button>
+          <span class="tabular-nums select-none">
+            {currentIndex + 1} / {total}
+          </span>
+          <button
+            type="button"
+            onClick={onNext}
+            disabled={currentIndex >= total - 1}
+            aria-label="Next response"
+            class="p-1 rounded hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-500 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+          >
+            <ChevronRightIcon size={12} />
+          </button>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={retryDisabled}
+        aria-label="Regenerate response"
+        title="Generate another response"
+        class="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-500 outline-none focus-visible:ring-2 focus-visible:ring-zinc-500"
+      >
+        <RefreshIcon size={12} />
+        <span>Retry</span>
+      </button>
+    </div>
   );
 }
 

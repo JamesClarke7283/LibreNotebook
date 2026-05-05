@@ -168,4 +168,12 @@ export interface ChatMessage {
   /** Only populated for assistant messages that grounded their reply. */
   citations?: Citation[];
   createdAt: string;
+  /** Only on assistant messages: the id of the user message this reply
+   *  is answering. Multiple assistant messages with the same `replyToId`
+   *  are alternative responses produced via the Retry button — the UI
+   *  groups them and shows one at a time with a `< 1 / N >` pager.
+   *  Optional for backwards-compatibility with messages stored before
+   *  this field existed; those legacy assistants are paired
+   *  positionally with the most recent user message before them. */
+  replyToId?: string;
 }
