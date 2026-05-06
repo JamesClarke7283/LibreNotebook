@@ -130,7 +130,10 @@ export function SourcesPanel({ notebookId, initial }: Props) {
     <section class="rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-col min-h-[70vh]">
       <header class="flex items-center justify-between px-4 py-3 border-b border-zinc-800/60">
         <h2 class="text-zinc-100 font-medium">Sources</h2>
-        <button class="p-1.5 rounded hover:bg-zinc-800 text-zinc-400" aria-label="Toggle sidebar">
+        <button
+          class="p-1.5 rounded hover:bg-zinc-800 text-zinc-400"
+          aria-label="Toggle sidebar"
+        >
           <SidebarIcon size={16} />
         </button>
       </header>
@@ -170,16 +173,19 @@ export function SourcesPanel({ notebookId, initial }: Props) {
                 <input
                   placeholder="Source name (optional)"
                   value={name.value}
-                  onInput={(e) =>
-                    (name.value = (e.currentTarget as HTMLInputElement).value)}
+                  onInput={(
+                    e,
+                  ) => (name.value =
+                    (e.currentTarget as HTMLInputElement).value)}
                   class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
                 />
                 <textarea
                   placeholder="Paste text…"
                   value={text.value}
-                  onInput={(e) =>
-                    (text.value =
-                      (e.currentTarget as HTMLTextAreaElement).value)}
+                  onInput={(
+                    e,
+                  ) => (text.value =
+                    (e.currentTarget as HTMLTextAreaElement).value)}
                   rows={6}
                   class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
                 />
@@ -190,8 +196,9 @@ export function SourcesPanel({ notebookId, initial }: Props) {
               <input
                 placeholder="https://example.com/article"
                 value={url.value}
-                onInput={(e) =>
-                  (url.value = (e.currentTarget as HTMLInputElement).value)}
+                onInput={(
+                  e,
+                ) => (url.value = (e.currentTarget as HTMLInputElement).value)}
                 class="w-full rounded-md bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
               />
             )}
@@ -210,12 +217,12 @@ export function SourcesPanel({ notebookId, initial }: Props) {
                 />
                 {file.value && (
                   <p class="text-[11px] text-zinc-500 mt-1">
-                    {file.value.name} ·{" "}
-                    {(file.value.size / 1024).toFixed(0)} KB
+                    {file.value.name} · {(file.value.size / 1024).toFixed(0)} KB
                   </p>
                 )}
                 <p class="text-[11px] text-zinc-500 mt-1">
-                  Text and embedded images will be extracted via Mozilla's PDF.js.
+                  Text and embedded images will be extracted via Mozilla's
+                  PDF.js.
                 </p>
               </div>
             )}
@@ -230,14 +237,12 @@ export function SourcesPanel({ notebookId, initial }: Props) {
               disabled={busy.value}
               class="w-full inline-flex items-center justify-center gap-2 rounded-full bg-zinc-100 text-zinc-900 hover:bg-white py-1.5 text-sm disabled:opacity-50"
             >
-              {busy.value
-                ? "Uploading…"
-                : (
-                  <>
-                    Add source
-                    <ArrowRightIcon size={14} />
-                  </>
-                )}
+              {busy.value ? "Uploading…" : (
+                <>
+                  Add source
+                  <ArrowRightIcon size={14} />
+                </>
+              )}
             </button>
           </div>
         )}
@@ -292,11 +297,57 @@ function SourceItem(
     }
   }
 
+  const pending = source.status === "pending";
+  const failed = source.status === "failed";
+  const p = source.progress;
+  const pct = pending && p && p.total > 0
+    ? Math.min(100, Math.round((p.current / p.total) * 100))
+    : null;
+
   return (
     <li class="flex items-start gap-2 px-3 py-2 rounded-md bg-zinc-800/40 border border-zinc-800 group">
       <SourceLeadIcon source={source} />
       <div class="min-w-0 flex-1">
         <p class="text-sm text-zinc-100 truncate">{source.name}</p>
+        {pending && (
+          <div class="mt-1.5 mb-0.5">
+            <div
+              class="h-1 rounded-full bg-zinc-800 overflow-hidden"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={pct ?? undefined}
+              aria-label="Embedding progress"
+            >
+              <span
+                class={`block h-1 bg-emerald-400 transition-all ${
+                  pct === null ? "animate-pulse w-1/3" : ""
+                }`}
+                style={pct !== null ? `width: ${pct}%` : undefined}
+              />
+            </div>
+            <div class="flex items-center gap-1.5 mt-1 text-[10px] text-zinc-300">
+              <Spinner />
+              <span>
+                embedding{p && p.total > 0
+                  ? ` · ${p.current}/${p.total} chunks${
+                    pct !== null ? ` (${pct}%)` : ""
+                  }`
+                  : "…"}
+              </span>
+            </div>
+          </div>
+        )}
+        {failed && source.error && (
+          <p
+            class="mt-1 text-[11px] text-red-300 leading-snug break-words"
+            title={source.error}
+          >
+            {source.error.length > 120
+              ? source.error.slice(0, 120) + "…"
+              : source.error}
+          </p>
+        )}
         <div class="flex items-center gap-2 mt-0.5">
           <span class="text-[10px] uppercase tracking-wide text-zinc-500">
             {source.kind}
@@ -305,7 +356,7 @@ function SourceItem(
               ? ` · ${source.images.length} img`
               : ""}
           </span>
-          <StatusBadge source={source} />
+          {!pending && <StatusBadge source={source} />}
         </div>
       </div>
       <button
@@ -372,26 +423,9 @@ function SourceLeadIcon({ source }: { source: NotebookSource }) {
 }
 
 function StatusBadge({ source }: { source: NotebookSource }) {
-  if (source.status === "pending") {
-    const p = source.progress;
-    const pct = p && p.total > 0
-      ? Math.min(100, Math.round((p.current / p.total) * 100))
-      : null;
-    return (
-      <span class="inline-flex items-center gap-1.5 text-[10px] text-zinc-300">
-        <Spinner />
-        <span>embedding{pct !== null ? ` ${pct}%` : "…"}</span>
-        {pct !== null && (
-          <span class="inline-block w-12 h-1 rounded-full bg-zinc-800 overflow-hidden">
-            <span
-              class="block h-1 bg-emerald-400 transition-all"
-              style={`width: ${pct}%`}
-            />
-          </span>
-        )}
-      </span>
-    );
-  }
+  // The "pending" case is handled above the kind row by SourceItem (full-
+  // width progress bar + chunk counter). Here we only render the
+  // compact ready / failed badges that sit alongside the kind label.
   if (source.status === "failed") {
     return (
       <span
@@ -402,9 +436,7 @@ function StatusBadge({ source }: { source: NotebookSource }) {
       </span>
     );
   }
-  return (
-    <span class="text-[10px] text-emerald-400">ready</span>
-  );
+  return <span class="text-[10px] text-emerald-400">ready</span>;
 }
 
 function Spinner() {

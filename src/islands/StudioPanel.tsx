@@ -28,6 +28,13 @@ import {
 } from "../components/Icons.tsx";
 import type { StudioItem } from "../lib/types.ts";
 import { getLogger } from "../lib/client-logger.ts";
+import {
+  downloadBlob,
+  renderMermaidToSvg,
+  safeFilenameStem,
+  svgStringToPng,
+} from "../lib/mermaid-client.ts";
+import { InfographicViewer } from "./InfographicViewer.tsx";
 
 const clientLog = getLogger("studio-panel");
 
@@ -95,6 +102,11 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
   const note = useSignal("");
   const editing = useSignal(false);
   const items = useSignal<StudioItem[]>(initialItems);
+  // Currently-open infographic in the fullscreen viewer. Null means no
+  // viewer is open. The InfographicModal dispatches an open event after
+  // a successful generation so the viewer surfaces the result without
+  // the user having to click the studio card themselves.
+  const viewerItem = useSignal<StudioItem | null>(null);
 
   /** Optimistic remove + DELETE; rolls back on error. Mirrors the
    *  SourcesPanel pattern. */
@@ -112,6 +124,40 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
     } catch {
       // Roll back the optimistic remove if the server refused.
       items.value = prev;
+    }
+  }
+
+  function openViewer(item: StudioItem) {
+    if (item.kind !== "infographic") return;
+    viewerItem.value = item;
+  }
+
+  /** Render `mermaid` → SVG/PNG and trigger a browser download. Used
+   *  by both the kebab-menu downloads and (potentially) future viewer
+   *  toolbar buttons. */
+  async function downloadDiagram(
+    item: StudioItem,
+    format: "svg" | "png",
+  ): Promise<void> {
+    if (!item.mermaid) return;
+    const stem = safeFilenameStem(item.title || "infographic");
+    try {
+      const svg = await renderMermaidToSvg(item.mermaid);
+      if (format === "svg") {
+        downloadBlob(
+          new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
+          `${stem}.svg`,
+        );
+      } else {
+        const png = await svgStringToPng(svg);
+        downloadBlob(png, `${stem}.png`);
+      }
+    } catch (err) {
+      clientLog.error("studio download failed", {
+        itemId: item.id,
+        format,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -150,12 +196,42 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
       }
     }
     globalThis.addEventListener("librenotebook:studio-started", onStarted);
+
+    // InfographicModal dispatches this once the bg iteration loop
+    // finishes successfully — we resolve the studio item locally (or
+    // refetch /studio if it isn't in our list yet, e.g. just after
+    // server-side auto-finalise) and pop the fullscreen viewer.
+    async function onOpenViewer(e: Event) {
+      const detail = (e as CustomEvent<{ studioItemId: string }>).detail;
+      if (!detail?.studioItemId) return;
+      let found = items.value.find((i) => i.id === detail.studioItemId);
+      if (!found) {
+        try {
+          const res = await fetch(
+            `/api/notebooks/${notebookId}/studio/${detail.studioItemId}`,
+          );
+          if (res.ok) found = await res.json() as StudioItem;
+        } catch {
+          // ignore — viewer just won't open
+        }
+      }
+      if (found) openViewer(found);
+    }
+    globalThis.addEventListener(
+      "librenotebook:open-infographic-viewer",
+      onOpenViewer,
+    );
+
     return () => {
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
       globalThis.removeEventListener(
         "librenotebook:studio-started",
         onStarted,
+      );
+      globalThis.removeEventListener(
+        "librenotebook:open-infographic-viewer",
+        onOpenViewer,
       );
     };
   }, [notebookId]);
@@ -201,6 +277,8 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
                 <StudioItemCard
                   key={it.id}
                   item={it}
+                  onOpen={() => openViewer(it)}
+                  onDownload={(format) => downloadDiagram(it, format)}
                   onDelete={() => deleteItem(it.id)}
                 />
               ))}
@@ -252,15 +330,29 @@ export function StudioPanel({ notebookId, initialItems }: Props) {
           <span>{editing.value ? "Cancel" : "Add note"}</span>
         </button>
       </div>
+
+      <InfographicViewer
+        open={viewerItem.value !== null}
+        title={viewerItem.value?.title ?? ""}
+        mermaid={viewerItem.value?.mermaid ?? null}
+        onClose={() => (viewerItem.value = null)}
+      />
     </section>
   );
 }
 
 function StudioItemCard(
-  { item, onDelete }: { item: StudioItem; onDelete: () => void },
+  { item, onOpen, onDownload, onDelete }: {
+    item: StudioItem;
+    onOpen: () => void;
+    onDownload: (format: "svg" | "png") => void;
+    onDelete: () => void;
+  },
 ) {
   const generating = item.status === "generating";
   const failed = item.status === "failed";
+  const ready = item.status === "ready";
+  const canDownload = ready && item.kind === "infographic" && !!item.mermaid;
   // SSR + first client paint render `createdAbs`; after mount the
   // useRelativeTime hook flips `ago` to "5m ago". Both renders agree on
   // the same text node, so Preact never sees a hydration mismatch.
@@ -309,16 +401,19 @@ function StudioItemCard(
       title: item.title,
     });
     if (item.status === "ready") {
-      globalThis.dispatchEvent(
-        new CustomEvent("librenotebook:open-studio-item", {
-          detail: { id: item.id },
-        }),
-      );
+      onOpen();
       return;
     }
     // Generating / failed cards open a small status popover instead
     // of a full modal so the chat surface isn't disturbed.
     statusOpen.value = !statusOpen.value;
+  }
+
+  function onDownloadClick(format: "svg" | "png") {
+    clientLog.debug("studio download click", { id: item.id, format });
+    menuOpen.value = false;
+    confirming.value = false;
+    onDownload(format);
   }
 
   function onMenuClick(e: Event) {
@@ -403,9 +498,14 @@ function StudioItemCard(
             </span>
             <span class="block text-[11px] text-zinc-500 truncate">
               {generating
-                ? `based on ${item.basedOnSources} source${
-                  item.basedOnSources === 1 ? "" : "s"
-                }${item.iteration ? ` · iter ${item.iteration}/3` : ""}`
+                ? (
+                  <>
+                    based on {item.basedOnSources}{" "}
+                    source{item.basedOnSources === 1 ? "" : "s"}
+                    {item.iteration ? ` · iter ${item.iteration}/7` : ""}
+                    {item.inFlight ? " · thinking…" : ""}
+                  </>
+                )
                 : failed
                 ? `failed${item.error ? ` · ${item.error.slice(0, 40)}` : ""}`
                 : (
@@ -416,6 +516,27 @@ function StudioItemCard(
                   </>
                 )}
             </span>
+            {generating && (
+              <span
+                class="block mt-1 h-1 rounded-full bg-zinc-800 overflow-hidden"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={7}
+                aria-valuenow={item.iteration ?? 0}
+                aria-label="Iteration progress"
+              >
+                <span
+                  class={`block h-1 transition-all ${
+                    item.inFlight
+                      ? "bg-yellow-300/70 animate-pulse"
+                      : "bg-yellow-300"
+                  }`}
+                  style={`width: ${
+                    Math.min(100, ((item.iteration ?? 0) / 7) * 100)
+                  }%`}
+                />
+              </span>
+            )}
           </span>
         </button>
 
@@ -435,8 +556,29 @@ function StudioItemCard(
         <div
           ref={menuRef}
           role="menu"
-          class="absolute right-2 top-12 z-20 min-w-[8rem] rounded-md border border-zinc-700 bg-zinc-900 shadow-lg py-1 text-sm"
+          class="absolute right-2 top-12 z-20 min-w-[10rem] rounded-md border border-zinc-700 bg-zinc-900 shadow-lg py-1 text-sm"
         >
+          {canDownload && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => onDownloadClick("png")}
+                class="block w-full text-left px-3 py-1.5 text-zinc-200 hover:bg-zinc-800 hover:text-white"
+              >
+                Download PNG
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => onDownloadClick("svg")}
+                class="block w-full text-left px-3 py-1.5 text-zinc-200 hover:bg-zinc-800 hover:text-white"
+              >
+                Download SVG
+              </button>
+              <div class="my-1 border-t border-zinc-800" role="separator" />
+            </>
+          )}
           <button
             type="button"
             role="menuitem"

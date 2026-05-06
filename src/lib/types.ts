@@ -79,8 +79,18 @@ export interface StudioItem {
   basedOnSources: number;
   /** Last refinement iteration (1..N). */
   iteration?: number;
-  /** Final Mermaid code (for "infographic" kind, status === "ready"). */
+  /** Latest iteration's Mermaid (overwritten each iteration; settles on
+   *  the final value when status flips to "ready"). */
   mermaid?: string;
+  /** Latest iteration's DONE verdict — true means refine signalled stop. */
+  modelDoneVerdict?: boolean | null;
+  /** Job id for the in-flight iteration; lets the client send the next
+   *  /refine without re-reading the studio item. */
+  jobId?: string;
+  /** True while a background task is running (LLM is thinking). The
+   *  client uses the true→false transition as the signal that a new
+   *  iteration's Mermaid is now available to render + post back. */
+  inFlight?: boolean;
   /** Chat message id where the rendered diagram lives. */
   messageId?: string;
   error?: string;

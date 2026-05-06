@@ -234,11 +234,15 @@ export async function streamRagAnswer(
   const llm = await buildChatModel(settings.llm);
   const embeddings = buildEmbeddings(settings.embedding);
 
-  // Retrieval (skipped gracefully when the notebook has no sources yet
-  // OR the embedding server is unreachable).
+  // Retrieval. k=8 covers a couple of chunks from each source in a
+  // typical 2–3 source notebook so a question about a topic that's only
+  // in one source still surfaces it (k=4 was prone to all 4 nearest
+  // neighbours coming from the dominant source). Skipped gracefully
+  // when the notebook has no sources yet OR the embedding server is
+  // unreachable.
   let docs: Document[] = [];
   try {
-    docs = await similaritySearch(notebookId, embeddings, question, 4);
+    docs = await similaritySearch(notebookId, embeddings, question, 8);
   } catch (err) {
     log.warn("similaritySearch failed", {
       notebookId,

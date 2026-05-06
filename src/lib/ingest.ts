@@ -5,14 +5,17 @@
 import { Document } from "@langchain/core/documents";
 import { buildEmbeddings } from "./embeddings.ts";
 import { buildSmartSplitter, getEmbeddingContextLength } from "./chunking.ts";
-import { addDocuments } from "./vectorstore.ts";
+import { addDocumentsBulk } from "./vectorstore.ts";
 import { getLogger } from "./logger.ts";
 import type { AppSettings, NotebookSource } from "./types.ts";
 
 const log = getLogger("ingest");
 
-/** Embedding batch size. Smaller = smoother progress, more HTTP overhead. */
-const BATCH = 4;
+/** Embedding batch size. Bigger = fewer round-trips. 16 lets a typical
+ *  ~50-chunk PDF complete in 3 batches; concurrency in addDocumentsBulk
+ *  pipelines those round-trips so the wall-clock time is dominated by
+ *  the slowest single batch, not their sum. */
+const BATCH = 16;
 
 export async function ingestSource(
   settings: AppSettings,
@@ -58,35 +61,27 @@ export async function ingestSource(
   }
 
   const embeddings = buildEmbeddings(settings.embedding);
-  const totalBatches = Math.ceil(total / BATCH);
-  let done = 0;
-  let batchIdx = 0;
   const embedStart = Date.now();
-  for (let i = 0; i < docs.length; i += BATCH) {
-    batchIdx++;
-    const batch = docs.slice(i, i + BATCH);
-    const batchStart = Date.now();
-    log.info("ingest embed batch start", {
-      sourceId: source.id,
-      batch: `${batchIdx}/${totalBatches}`,
-      docs: batch.length,
-    });
-    await addDocuments(source.notebookId, embeddings, batch);
-    done += batch.length;
-    log.info("ingest embed batch done", {
-      sourceId: source.id,
-      batch: `${batchIdx}/${totalBatches}`,
-      done: `${done}/${total}`,
-      elapsedMs: Date.now() - batchStart,
-    });
-    if (onProgress) await onProgress(done, total);
-  }
+  const written = await addDocumentsBulk(
+    source.notebookId,
+    embeddings,
+    docs,
+    BATCH,
+    (batchIdx, totalBatches, batchMs) => {
+      log.info("ingest embed batch done", {
+        sourceId: source.id,
+        batch: `${batchIdx}/${totalBatches}`,
+        elapsedMs: batchMs,
+      });
+    },
+    onProgress,
+  );
   log.info("ingest done", {
     sourceId: source.id,
-    chunks: total,
+    chunks: written,
     embedElapsedMs: Date.now() - embedStart,
   });
-  return done;
+  return written;
 }
 
 /** Fetch a URL and return the (very rough) plain-text body. */

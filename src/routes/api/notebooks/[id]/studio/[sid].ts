@@ -1,5 +1,8 @@
 // /api/notebooks/:id/studio/:sid
 //
+//   GET    → fetch a single studio item. Cheap fast path the
+//            InfographicModal polls at ~600 ms during iteration so we
+//            don't re-fetch the whole list on every tick.
 //   DELETE → drop one studio item (infographic, audio, report, …) from
 //            the notebook. Idempotent: returns 204 even if the item was
 //            already gone. The chat-side message that hosts the rendered
@@ -18,6 +21,13 @@ import { getLogger } from "../../../../../lib/logger.ts";
 const log = getLogger("studio-delete");
 
 export const handler = define.handlers({
+  async GET(ctx) {
+    const { id: notebookId, sid: itemId } = ctx.params;
+    const item = await getStudioItem(notebookId, itemId);
+    if (!item) return new Response("Not found", { status: 404 });
+    return Response.json(item);
+  },
+
   async DELETE(ctx) {
     const { id: notebookId, sid: itemId } = ctx.params;
     log.debug("studio DELETE received", { notebookId, itemId });

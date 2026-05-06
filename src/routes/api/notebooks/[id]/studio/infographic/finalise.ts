@@ -2,18 +2,26 @@
 //
 // Body: { jobId }
 //
-// Wraps up the iteration loop: appends the final Mermaid as an
-// assistant chat message (so the diagram appears in the conversation
-// stream just like a normal reply), flips the studio item to "ready"
-// with the derived title, and cleans up the job file.
+// Wraps up the iteration loop by flipping the studio item to "ready"
+// with the latest Mermaid. The /refine background task auto-finalises
+// when the model emits DONE: yes (so a closed browser doesn't strand
+// the result), so this route is idempotent — if the item is already
+// "ready" we return it as-is.
+//
+// Diagrams live on the studio item (not in chat history). The
+// fullscreen InfographicViewer surfaces them when the user clicks the
+// ready card.
 
 import { define } from "../../../../../../utils.ts";
 import {
-  addMessage,
+  getStudioItem,
   updateStudioItem,
 } from "../../../../../../lib/storage.ts";
 import { deriveTitle } from "../../../../../../lib/infographic.ts";
 import { deleteJob, readJob } from "../../../../../../lib/jobs.ts";
+import { getLogger } from "../../../../../../lib/logger.ts";
+
+const log = getLogger("infographic-finalise");
 
 export const handler = define.handlers({
   async POST(ctx) {
@@ -28,32 +36,46 @@ export const handler = define.handlers({
     if (!jobId) return new Response("Missing jobId", { status: 400 });
 
     const job = await readJob(notebookId, jobId);
-    if (!job) return new Response("Job not found", { status: 404 });
+
+    // Idempotency path: the bg refine task may have already finalised
+    // when the model emitted DONE: yes. The job file is deleted on
+    // auto-finalise so a missing job is a graceful "already done".
+    if (!job) {
+      log.info("finalise: job already deleted (auto-finalised path)", {
+        notebookId,
+        jobId,
+      });
+      return Response.json({ ok: true, alreadyFinalised: true });
+    }
+
+    const item = await getStudioItem(notebookId, job.studioItemId);
+    if (item?.status === "ready") {
+      log.info("finalise: studio item already ready (idempotent no-op)", {
+        notebookId,
+        jobId,
+        studioItemId: item.id,
+      });
+      await deleteJob(notebookId, jobId).catch(() => {});
+      return Response.json({
+        ok: true,
+        alreadyFinalised: true,
+        studioItem: item,
+      });
+    }
+
     const last = job.history[job.history.length - 1];
     if (!last) return new Response("Empty job", { status: 500 });
 
     const title = deriveTitle(last.mermaid, job.params);
-
-    // Append as an assistant chat message containing the fenced
-    // mermaid block — ChatPanel's MessageBubble extracts it and
-    // renders the SVG via MermaidView.
-    const message = await addMessage({
-      notebookId,
-      role: "assistant",
-      content:
-        `Here's the infographic you requested:\n\n` +
-        "```mermaid\n" + last.mermaid + "\n```",
-    });
-
     const studioItem = await updateStudioItem(notebookId, job.studioItemId, {
       status: "ready",
       mermaid: last.mermaid,
       title,
-      messageId: message.id,
+      inFlight: false,
     });
 
     await deleteJob(notebookId, jobId).catch(() => {});
 
-    return Response.json({ ok: true, message, studioItem });
+    return Response.json({ ok: true, studioItem });
   },
 });

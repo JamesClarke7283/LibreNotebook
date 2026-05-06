@@ -49,7 +49,7 @@
     "frontendLibrary": {
       "devUrl": "http://localhost:5173",
       "projectPath": "/",
-      "devCommand": "deno task dev",
+      "devCommand": "deno run -A scripts/dev-noop.ts",
       "buildCommand": "deno task build"
     }
   }

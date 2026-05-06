@@ -465,11 +465,6 @@ export function ChatPanel(props: Props) {
         notebookId={props.notebookId}
         open={infographicOpen.value}
         onClose={() => (infographicOpen.value = false)}
-        onFinalised={(message) => {
-          messages.value = [...messages.value, message];
-          infographicOpen.value = false;
-          scrollToBottom();
-        }}
       />
     </section>
   );
@@ -618,9 +613,9 @@ function MessageBubble(
     "bg-zinc-900 border border-zinc-800 text-zinc-200 mr-auto max-w-[90%]";
   const segments = m.content ? splitOutMermaidBlocks(m.content) : [];
   return (
-    <li class="flex">
+    <li class="flex" id={`msg-${m.id}`}>
       <div
-        class={`rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap ${
+        class={`rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap transition-shadow ${
           m.role === "user" ? userClass : aiClass
         }`}
       >
@@ -713,7 +708,10 @@ function MessageGroup(
     <>
       <MessageBubble m={group.userMsg} onOpenCitation={onOpenCitation} />
       {visible && (
-        <li class="flex flex-col items-start gap-1 max-w-[90%] mr-auto">
+        <li
+          class="flex flex-col items-start gap-1 max-w-[90%] mr-auto transition-shadow"
+          id={`msg-${visible.id}`}
+        >
           <MessageBubbleBody m={visible} onOpenCitation={onOpenCitation} />
           <AssistantToolbar
             currentIndex={idx}

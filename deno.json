@@ -6,7 +6,7 @@
     "build": "deno run -A npm:vite build",
     "start": "deno serve -A _fresh/server.js",
     "update": "deno run -A -r jsr:@fresh/update .",
-    "neu": "MULTI_USER=0 npx -y @neutralinojs/neu run",
+    "neu": "MULTI_USER=0 deno run -A scripts/start-app.ts",
     "neu:build": "npx -y @neutralinojs/neu build --release",
     "neu:update": "npx -y @neutralinojs/neu update",
     "test": "deno test --allow-all --no-check tests/",

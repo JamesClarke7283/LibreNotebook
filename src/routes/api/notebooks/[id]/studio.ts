@@ -3,12 +3,13 @@
 // is in `status === "generating"`.
 //
 // Auto-recovers studio items orphaned by a server restart: anything
-// stuck in "generating" longer than 5 minutes (well past our 180s LLM
-// invoke timeout) is flipped to "failed" so the perpetual spinner
-// disappears. Unlike the summary route we don't auto-rekick — the
-// infographic refine loop is driven client-side by InfographicModal
-// polling /refine, and without an open browser tab there's no driver.
-// User clicks the Infographic tile to retry.
+// stuck in "generating" longer than 10 minutes (well past our 180 s LLM
+// invoke timeout, with headroom for slow Ollama models that may take
+// 5+ min for a single iteration of a 7-iteration loop) is flipped to
+// "failed" so the perpetual spinner disappears. Each iteration's bg
+// task bumps the studio item's updatedAt, so live runs heartbeat
+// against this sweep. User clicks the Infographic tile to retry on
+// failure.
 
 import { define } from "../../../../utils.ts";
 import { listStudioItems, updateStudioItem } from "../../../../lib/storage.ts";
@@ -16,7 +17,7 @@ import { getLogger } from "../../../../lib/logger.ts";
 
 const log = getLogger("studio-route");
 
-const STALE_MS = 5 * 60 * 1000;
+const STALE_MS = 10 * 60 * 1000;
 
 export const handler = define.handlers({
   async GET(ctx) {

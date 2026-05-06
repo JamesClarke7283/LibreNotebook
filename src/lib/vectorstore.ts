@@ -5,7 +5,7 @@
 //
 // The shape of this module is deliberately tiny so swapping in
 // @lancedb/lancedb later is a single-file change: callers only see
-// `getStore`, `addDocuments`, `similaritySearch`, and `dropStore`.
+// `getStore`, `addDocumentsBulk`, `similaritySearch`, and `dropStore`.
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -62,14 +62,51 @@ export async function getStore(
   return store;
 }
 
-/** Add documents and persist. Returns the number of chunks added. */
-export async function addDocuments(
+/**
+ * Embed `docs` in batches and persist the resulting vectors. The store
+ * is loaded from disk once at the start and persisted once at the end —
+ * an earlier per-batch read+write cycle was O(n²) on the serialised
+ * JSON size and stalled multi-megabyte stores. Batches run with bounded
+ * concurrency (default 3 in flight) so the embedding API gets pipelined
+ * instead of waiting on round-trip latency between every batch.
+ *
+ * Crash-safety trade-off: a mid-ingest crash now loses the whole run
+ * instead of keeping partial progress; ingest is idempotent so the
+ * user just re-uploads.
+ */
+export async function addDocumentsBulk(
   notebookId: string,
   embeddings: Embeddings,
   docs: Document[],
+  batchSize: number,
+  onBatch?: (batchIdx: number, totalBatches: number, batchMs: number) => void,
+  onProgress?: (done: number, total: number) => Promise<void> | void,
+  concurrency = 3,
 ): Promise<number> {
   const store = await getStore(notebookId, embeddings);
-  await store.addDocuments(docs);
+  const totalBatches = Math.ceil(docs.length / batchSize);
+  let done = 0;
+  let nextBatch = 0;
+  if (onProgress) await onProgress(0, docs.length);
+
+  const total = docs.length;
+  const workerCount = Math.max(1, Math.min(concurrency, totalBatches));
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const myBatch = nextBatch++;
+      if (myBatch >= totalBatches) return;
+      const start = myBatch * batchSize;
+      const batch = docs.slice(start, start + batchSize);
+      const t0 = Date.now();
+      await store.addDocuments(batch);
+      done += batch.length;
+      onBatch?.(myBatch + 1, totalBatches, Date.now() - t0);
+      if (onProgress) await onProgress(done, total);
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
   await persist(
     notebookId,
     store.memoryVectors.map((v) => ({

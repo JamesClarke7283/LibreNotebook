@@ -2,11 +2,11 @@
 //
 // Body: { language, orientation, style, detail, description }
 //
-// Generates the *first* Mermaid diagram from the user's customise-form
-// inputs and the notebook's source context. Inserts a Studio item with
-// status "generating" so the right-pane card appears immediately, and a
-// job record so subsequent /refine and /finalise calls can pick up
-// state. Returns { jobId, studioItemId, iteration: 1, mermaid }.
+// Inserts a Studio item with status "generating", creates an empty job,
+// and fires the initial Mermaid generation as a background task. Returns
+// 202 immediately with { jobId, studioItemId, iteration: 0 } so the
+// client never holds an open HTTP request through the long LLM call —
+// it polls the studio item for the iteration's settled mermaid.
 
 import { define } from "../../../../../../utils.ts";
 import {
@@ -19,8 +19,9 @@ import {
   generateInitialMermaid,
   type InfographicParams,
 } from "../../../../../../lib/infographic.ts";
-import { createJob } from "../../../../../../lib/jobs.ts";
+import { createJob, readJob, writeJob } from "../../../../../../lib/jobs.ts";
 import { getLogger } from "../../../../../../lib/logger.ts";
+import type { AppSettings } from "../../../../../../lib/types.ts";
 
 const log = getLogger("infographic-start");
 
@@ -46,6 +47,54 @@ function parseParams(x: unknown): InfographicParams | null {
   };
 }
 
+async function runInitialInBackground(
+  settings: AppSettings,
+  notebookId: string,
+  studioItemId: string,
+  jobId: string,
+  params: InfographicParams,
+): Promise<void> {
+  try {
+    const mermaid = await generateInitialMermaid(settings, notebookId, params);
+    const job = await readJob(notebookId, jobId);
+    if (!job) {
+      log.warn("infographic initial bg: job vanished mid-run", {
+        notebookId,
+        studioItemId,
+        jobId,
+      });
+      return;
+    }
+    job.history.push({ iter: 1, mermaid });
+    await writeJob(job);
+    await updateStudioItem(notebookId, studioItemId, {
+      iteration: 1,
+      mermaid,
+      modelDoneVerdict: null,
+      inFlight: false,
+    });
+    log.info("infographic initial bg done", {
+      notebookId,
+      studioItemId,
+      jobId,
+      mermaidChars: mermaid.length,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn("infographic initial bg failed", {
+      notebookId,
+      studioItemId,
+      jobId,
+      error: msg,
+    });
+    await updateStudioItem(notebookId, studioItemId, {
+      status: "failed",
+      error: msg,
+      inFlight: false,
+    });
+  }
+}
+
 export const handler = define.handlers({
   async POST(ctx) {
     const notebookId = ctx.params.id;
@@ -64,41 +113,48 @@ export const handler = define.handlers({
     const params = parseParams(body);
     if (!params) return new Response("Invalid params", { status: 400 });
 
-    // Insert the studio item up-front so the right pane shows the
-    // "Generating infographic… based on N sources" card immediately.
+    // Empty job up-front — the bg task pushes to its history when the
+    // initial mermaid lands, and subsequent /refine calls keep appending.
+    const job = await createJob({
+      notebookId,
+      studioItemId: "", // patched below once we have the item id
+      params,
+      history: [],
+    });
+
     const item = await addStudioItem({
       notebookId,
       kind: "infographic",
       title: "Generating infographic…",
       status: "generating",
       basedOnSources: nb.sourceCount,
-      iteration: 1,
+      iteration: 0,
+      jobId: job.id,
+      inFlight: true,
+      modelDoneVerdict: null,
     });
 
-    let mermaid: string;
-    try {
-      mermaid = await generateInitialMermaid(settings, notebookId, params);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await updateStudioItem(notebookId, item.id, {
-        status: "failed",
-        error: msg,
-      });
-      return Response.json({ ok: false, error: msg }, { status: 502 });
-    }
+    // Now that we have the studio item id, link it back into the job
+    // record so /refine and the bg task can find each other.
+    job.studioItemId = item.id;
+    await writeJob(job);
 
-    const job = await createJob({
-      notebookId,
-      studioItemId: item.id,
-      params,
-      history: [{ iter: 1, mermaid }],
+    queueMicrotask(() => {
+      runInitialInBackground(settings, notebookId, item.id, job.id, params)
+        .catch((err) => {
+          log.error("infographic initial bg uncaught", {
+            notebookId,
+            studioItemId: item.id,
+            jobId: job.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     });
 
     return Response.json({
       jobId: job.id,
       studioItemId: item.id,
-      iteration: 1,
-      mermaid,
+      iteration: 0,
     }, { status: 202 });
   },
 });

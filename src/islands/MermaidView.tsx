@@ -4,44 +4,13 @@
 // rendered SVG so it can ship a PNG back to the server.
 //
 // Mermaid is heavy (d3 + dagre + parser) so it's lazy-loaded on first
-// mount.
+// mount via the shared loadMermaid() in lib/mermaid-client.ts so the
+// chat, the modal, the viewer and the kebab-download paths all share
+// one module instance.
 
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-
-type Mermaid = {
-  initialize: (config: Record<string, unknown>) => void;
-  render: (id: string, code: string) => Promise<{ svg: string }>;
-};
-
-let mermaidPromise: Promise<Mermaid> | null = null;
-function loadMermaid(): Promise<Mermaid> {
-  if (!mermaidPromise) {
-    // Use mermaid's standalone min ESM bundle directly. The package's
-    // default `import "mermaid"` resolves to dist/mermaid.core.mjs,
-    // which fans out into ./chunks/... ESM files. Vite's dev mode
-    // mishandles those chunk re-exports under our flat npm layout
-    // and throws:
-    //   "Importing binding name 'default' cannot be resolved by
-    //    star export entries"
-    // The single-file `mermaid.esm.min.mjs` bundle is a self-
-    // contained ESM that imports cleanly under Vite + browser.
-    mermaidPromise = import("mermaid/dist/mermaid.esm.min.mjs").then(
-      (mod) => {
-        // deno-lint-ignore no-explicit-any
-        const m = ((mod as any).default ?? mod) as Mermaid;
-        m.initialize({
-          startOnLoad: false,
-          theme: "dark",
-          securityLevel: "strict",
-          fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        });
-        return m;
-      },
-    );
-  }
-  return mermaidPromise;
-}
+import { loadMermaid } from "../lib/mermaid-client.ts";
 
 interface Props {
   code: string;

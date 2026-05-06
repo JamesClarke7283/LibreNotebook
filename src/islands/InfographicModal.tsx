@@ -1,20 +1,21 @@
 // Customise-Infographic modal. Slides over the chat pane when the user
 // clicks the Infographic tile in StudioPanel. Once the user clicks
-// Generate, runs the start → refine* → finalise loop client-side,
-// posting the rendered PNG back to the server each iteration so the
-// LLM (when vision-capable) can see what it just produced.
+// Generate, drives the start → refine* loop by polling the studio
+// item; each settled iteration is rendered off-screen and the PNG is
+// posted back so the vision-capable LLM can critique its own output.
+// When the model signals DONE the server auto-finalises the studio
+// item to "ready" and we dispatch a viewer-open event so the
+// fullscreen InfographicViewer surfaces the result.
 
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-import type { ChatMessage } from "../lib/types.ts";
+import type { StudioItem } from "../lib/types.ts";
 import { MermaidView } from "./MermaidView.tsx";
 
 interface Props {
   notebookId: string;
   open: boolean;
   onClose: () => void;
-  /** Called when the loop has produced its final assistant chat message. */
-  onFinalised: (message: ChatMessage) => void;
 }
 
 const LANGUAGES = [
@@ -52,7 +53,7 @@ const STYLE_BG: Record<string, string> = {
 };
 
 export function InfographicModal(
-  { notebookId, open, onClose, onFinalised }: Props,
+  { notebookId, open, onClose }: Props,
 ) {
   const language = useSignal("English");
   const orientation = useSignal<"Landscape" | "Portrait" | "Square">(
@@ -65,10 +66,6 @@ export function InfographicModal(
   // Generation state.
   const phase = useSignal<"form" | "running" | "error">("form");
   const iteration = useSignal(0);
-  /** Defensive ceiling — matches the server's MAX_ITERATIONS so the
-   *  progress bar has a meaningful denominator while we wait for the
-   *  model to say `DONE: yes`. */
-  const maxIterations = useSignal(7);
   const currentMermaid = useSignal<string | null>(null);
   const renderError = useSignal<string | null>(null);
   const errorMsg = useSignal<string | null>(null);
@@ -120,23 +117,21 @@ export function InfographicModal(
 
   async function generate() {
     phase.value = "running";
-    iteration.value = 1;
+    iteration.value = 0;
     errorMsg.value = null;
     currentMermaid.value = null;
     renderedSvg.current = null;
+    renderError.value = null;
 
-    // Dispatch the "studio-started" signal *before* awaiting /start.
-    // The route's first action is to write the studio item to disk,
-    // but it then runs the initial LLM generation before returning
-    // (~30s on slow Ollama). Without an early dispatch the
-    // StudioPanel doesn't poll until that 30s is up, so the user
-    // sees the modal hide and nothing else for half a minute. The
-    // listener retries polling for ~6s, easily catching the
-    // freshly-written item.
+    // Fire the "studio-started" signal so StudioPanel begins polling
+    // even before /start responds. The route now returns 202 in
+    // milliseconds (the LLM call runs in a background task), so this
+    // is more for symmetry with the previous behaviour.
     globalThis.dispatchEvent(new CustomEvent("librenotebook:studio-started"));
 
     try {
-      // 1. Start
+      // 1. Start — 202 in <100 ms; the bg task generates the initial
+      //    mermaid and lands it on the studio item.
       const startRes = await fetch(
         `/api/notebooks/${notebookId}/studio/infographic/start`,
         {
@@ -157,85 +152,79 @@ export function InfographicModal(
       const startData = await startRes.json() as {
         jobId: string;
         studioItemId: string;
-        iteration: number;
-        mermaid: string;
       };
 
-      currentMermaid.value = startData.mermaid;
-      iteration.value = startData.iteration;
-      renderError.value = null;
+      // 2. Poll the studio item. Each iteration's bg task lands a new
+      //    mermaid + flips inFlight back to false; we render → capture
+      //    PNG → POST /refine to kick the next iteration. Auto-finalise
+      //    on the server flips status to "ready" without a /finalise
+      //    round-trip, so a closed browser at the last step doesn't
+      //    strand the work.
+      let lastSeenIter = 0;
+      while (true) {
+        const item = await pollStudioItem(notebookId, startData.studioItemId);
+        iteration.value = item.iteration ?? 0;
 
-      let done = false;
-      while (!done) {
-        // Wait for the just-mounted MermaidView to either render OR
-        // fail. Both paths resolve so the loop keeps moving even on
-        // syntax errors in LLM output.
-        renderedSvg.current = null;
-        const r = await waitForRender();
-        let imgBlob: Blob | null = null;
-        if (r.svg) {
-          try {
-            imgBlob = await svgElementToPng(r.svg);
-          } catch {
-            imgBlob = null;
+        if (item.status === "ready") {
+          // Server auto-finalised. Pop the fullscreen viewer with the
+          // finished diagram — StudioPanel listens for this event and
+          // looks up the item itself.
+          globalThis.dispatchEvent(
+            new CustomEvent("librenotebook:open-infographic-viewer", {
+              detail: { studioItemId: item.id },
+            }),
+          );
+          onClose();
+          return;
+        }
+        if (item.status === "failed") {
+          throw new Error(item.error ?? "Generation failed");
+        }
+
+        const hasNewIteration = (item.iteration ?? 0) > lastSeenIter &&
+          !item.inFlight && typeof item.mermaid === "string";
+
+        if (hasNewIteration) {
+          lastSeenIter = item.iteration!;
+
+          // If the model said done (or we hit the cap), the server's
+          // bg task is auto-finalising right now — keep polling until
+          // status flips to "ready". No client render or refine needed.
+          if (item.modelDoneVerdict === true) {
+            await sleep(600);
+            continue;
           }
-        } else if (r.error) {
-          // No image to feed back; the next refine call will get a
-          // text-only critique. The model sees its own broken output
-          // in the `Current Mermaid` block and tends to fix syntax on
-          // the next pass.
-          renderError.value = r.error;
+
+          // Render → capture PNG → POST refine. The hidden off-screen
+          // MermaidView is what mounts when currentMermaid changes.
+          currentMermaid.value = item.mermaid!;
+          renderedSvg.current = null;
+          const r = await waitForRender();
+
+          const fd = new FormData();
+          fd.append("jobId", startData.jobId);
+          if (r.svg) {
+            try {
+              const blob = await svgElementToPng(r.svg);
+              fd.append("image", blob, "rendered.png");
+            } catch {
+              // Capture failed — fall back to text-only critique.
+            }
+          } else if (r.error) {
+            renderError.value = r.error;
+            fd.append("renderError", r.error);
+          }
+          const ref = await fetch(
+            `/api/notebooks/${notebookId}/studio/infographic/refine`,
+            { method: "POST", body: fd },
+          );
+          if (!ref.ok) throw new Error(await ref.text() || "Refine failed");
+          // 202 — the actual result lands on the studio item via the
+          // next poll tick. Keep looping.
         }
 
-        const fd = new FormData();
-        fd.append("jobId", startData.jobId);
-        if (imgBlob) {
-          fd.append("image", imgBlob, "rendered.png");
-        }
-        // When the previous iteration's Mermaid failed to render,
-        // forward the actual error string so the next refine pass
-        // can quote it back to the model. Without this the model
-        // sees its broken output but doesn't know what's wrong.
-        if (r.error) {
-          fd.append("renderError", r.error);
-        }
-        const ref = await fetch(
-          `/api/notebooks/${notebookId}/studio/infographic/refine`,
-          { method: "POST", body: fd },
-        );
-        if (!ref.ok) throw new Error(await ref.text() || "Refine failed");
-        const refData = await ref.json() as {
-          iteration: number;
-          mermaid: string;
-          done: boolean;
-          modelDoneVerdict: boolean | null;
-          maxIterations: number;
-        };
-        currentMermaid.value = refData.mermaid;
-        iteration.value = refData.iteration;
-        if (typeof refData.maxIterations === "number") {
-          maxIterations.value = refData.maxIterations;
-        }
-        renderError.value = null;
-        done = refData.done;
+        await sleep(600);
       }
-
-      const fin = await fetch(
-        `/api/notebooks/${notebookId}/studio/infographic/finalise`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId: startData.jobId }),
-        },
-      );
-      if (!fin.ok) throw new Error(await fin.text() || "Finalise failed");
-      const finData = await fin.json() as { message: ChatMessage };
-
-      onFinalised(finData.message);
-      // Auto-close once the chat message has landed — the user
-      // doesn't need to dismiss anything; the new diagram is now in
-      // the chat history and the studio item is `ready`.
-      onClose();
     } catch (err) {
       errorMsg.value = err instanceof Error ? err.message : String(err);
       phase.value = "error";
@@ -499,6 +488,25 @@ export function InfographicModal(
       </div>
     </>
   );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Fetch a single studio item (cheap fast path the modal polls during
+ *  iteration so we don't refetch the whole list each tick). */
+async function pollStudioItem(
+  notebookId: string,
+  itemId: string,
+): Promise<StudioItem> {
+  const res = await fetch(
+    `/api/notebooks/${notebookId}/studio/${itemId}`,
+  );
+  if (!res.ok) {
+    throw new Error(`Studio item poll failed: HTTP ${res.status}`);
+  }
+  return await res.json() as StudioItem;
 }
 
 /**

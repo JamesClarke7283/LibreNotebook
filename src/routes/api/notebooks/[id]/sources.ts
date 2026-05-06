@@ -27,14 +27,24 @@ import {
 import { ingestSource } from "../../../../lib/ingest.ts";
 import { extractPdf } from "../../../../lib/pdf.ts";
 import { extractWebpage } from "../../../../lib/webpage.ts";
-import { extractYouTubeTranscript, isYouTubeUrl } from "../../../../lib/youtube.ts";
+import {
+  extractYouTubeTranscript,
+  isYouTubeUrl,
+} from "../../../../lib/youtube.ts";
+import { getLogger } from "../../../../lib/logger.ts";
 import type { NotebookSource } from "../../../../lib/types.ts";
+
+const log = getLogger("sources-route");
 
 async function ingestInBackground(
   source: NotebookSource,
 ): Promise<void> {
   const settings = await getSettings();
   if (!settings) {
+    log.warn("ingest aborted — no provider settings", {
+      sourceId: source.id,
+      sourceName: source.name,
+    });
     await updateSource(source.notebookId, source.id, {
       status: "failed",
       error: "No provider settings configured.",
@@ -53,6 +63,14 @@ async function ingestInBackground(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Log ingest failures explicitly — the catch was previously silent
+    // so transient embedding-API errors didn't surface in the log,
+    // making "stuck source" investigations harder.
+    log.warn("ingest failed", {
+      sourceId: source.id,
+      sourceName: source.name,
+      error: msg,
+    });
     await updateSource(source.notebookId, source.id, {
       status: "failed",
       error: msg,
